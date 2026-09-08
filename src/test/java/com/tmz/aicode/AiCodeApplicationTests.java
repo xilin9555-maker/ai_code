@@ -96,6 +96,13 @@ class AiCodeApplicationTests {
                 .andExpect(content().string(containsString("knife4j")));
     }
 
+    @Test
+    void longIdsAreSerializedAsStringsWithoutPrecisionLoss() throws Exception {
+        mockMvc.perform(get("/api/test/long-id").contextPath("/api"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value("1900000000000000001"));
+    }
+
     /**
      * 异常测试接口仅在测试上下文注册，不会发布到实际应用。
      */
@@ -120,6 +127,11 @@ class AiCodeApplicationTests {
         @GetMapping("/test/runtime-error")
         public BaseResponse<String> runtimeError() {
             throw new IllegalStateException("internal database connection details");
+        }
+
+        @GetMapping("/test/long-id")
+        public BaseResponse<Long> longId() {
+            return ResultUtils.success(1900000000000000001L);
         }
     }
 }

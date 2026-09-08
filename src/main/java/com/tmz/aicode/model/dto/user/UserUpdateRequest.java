@@ -8,7 +8,8 @@ import java.io.Serializable;
 /**
  * 管理员更新用户信息时提交的请求参数。
  *
- * 用户 id 用于定位记录，其余非空字段用于更新对应的用户资料。
+ * 用户 id 用于定位记录，昵称、头像、简介和角色构成管理员可以修改的资料范围。
+ * 登录账号与密码不属于这个对象，避免常规资料编辑影响用户的登录凭据。
  */
 @Data
 public class UserUpdateRequest implements Serializable {

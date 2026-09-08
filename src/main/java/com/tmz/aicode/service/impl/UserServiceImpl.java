@@ -21,6 +21,7 @@ import org.springframework.util.DigestUtils;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.tmz.aicode.constant.UserConstant.USER_LOGIN_STATE;
@@ -38,6 +39,24 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      */
     private static final String PASSWORD_SALT = "ai_code_password_salt";
 
+    /**
+     * 用户列表允许使用的排序字段。
+     */
+    private static final Set<String> USER_SORT_FIELDS = Set.of(
+            "id", "userAccount", "userName", "userRole", "editTime", "createTime", "updateTime"
+    );
+
+    /**
+     * 创建一个普通用户账号。
+     *
+     * 这里集中完成必填校验、长度校验、两次密码确认、账号查重、密码处理和用户落库，
+     * 确保任何调用注册能力的入口都遵循同一套规则。
+     *
+     * @param userAccount 用户用于登录的账号
+     * @param userPassword 用户输入的原始密码
+     * @param checkPassword 用户再次输入的确认密码
+     * @return 注册成功后生成的用户 id
+     */
     @Override
     public long userRegister(String userAccount, String userPassword, String checkPassword) {
         // 先拦截空白参数，避免后面的长度比较和数据库查询处理无效数据。
@@ -75,12 +94,28 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return user.getId();
     }
 
+    /**
+     * 使用固定盐值计算密码摘要。
+     *
+     * 注册和登录共用这个方法，保证同一密码在两个流程中得到一致的比较结果。
+     *
+     * @param userPassword 用户输入的原始密码
+     * @return 可用于数据库保存和登录比较的密码摘要
+     */
     @Override
     public String getEncryptPassword(String userPassword) {
         byte[] passwordBytes = (PASSWORD_SALT + userPassword).getBytes(StandardCharsets.UTF_8);
         return DigestUtils.md5DigestAsHex(passwordBytes);
     }
 
+    /**
+     * 把用户实体转换为当前登录用户视图。
+     *
+     * 目标对象只声明允许返回的字段，复制过程中会自然过滤密码和删除状态。
+     *
+     * @param user 用户实体
+     * @return 脱敏后的登录用户；输入为空时返回 {@code null}
+     */
     @Override
     public LoginUserVO getLoginUserVO(User user) {
         if (user == null) {
@@ -92,6 +127,17 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return loginUserVO;
     }
 
+    /**
+     * 校验账号密码并建立用户会话。
+     *
+     * 密码按照注册时相同的规则处理后参与查询；匹配成功时把用户写入当前 Session，
+     * 让后续请求能够识别用户身份。
+     *
+     * @param userAccount 用户账号
+     * @param userPassword 用户输入的原始密码
+     * @param request 当前 HTTP 请求
+     * @return 脱敏后的登录用户信息
+     */
     @Override
     public LoginUserVO userLogin(String userAccount, String userPassword, HttpServletRequest request) {
         // 登录参数只要存在空白内容，就没有继续查询数据库的必要。
@@ -120,6 +166,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return getLoginUserVO(user);
     }
 
+    /**
+     * 获取当前会话中的登录用户。
+     *
+     * Session 负责提供用户 id，随后重新查询数据库，避免返回登录时缓存的旧资料。
+     *
+     * @param request 当前 HTTP 请求
+     * @return 数据库中的最新用户记录
+     */
     @Override
     public User getLoginUser(HttpServletRequest request) {
         // Session 中没有有效用户时，说明当前请求尚未建立登录状态。
@@ -136,6 +190,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return currentUser;
     }
 
+    /**
+     * 清除当前会话中的用户登录状态。
+     *
+     * 该操作只移除登录用户属性，不会删除用户记录，也不会影响 Session 中的其他数据。
+     *
+     * @param request 当前 HTTP 请求
+     * @return 清除成功时返回 {@code true}
+     */
     @Override
     public boolean userLogout(HttpServletRequest request) {
         // 没有登录状态时不能执行注销，避免把重复操作误认为成功。
@@ -149,6 +211,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return true;
     }
 
+    /**
+     * 把单个用户实体转换为通用用户视图。
+     *
+     * @param user 用户实体
+     * @return 脱敏后的用户信息；输入为空时返回 {@code null}
+     */
     @Override
     public UserVO getUserVO(User user) {
         if (user == null) {
@@ -160,6 +228,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return userVO;
     }
 
+    /**
+     * 批量转换用户实体列表。
+     *
+     * 空输入会转换为空列表，调用方可以直接遍历结果，不需要额外判断空指针。
+     *
+     * @param userList 用户实体列表
+     * @return 脱敏后的用户视图列表
+     */
     @Override
     public List<UserVO> getUserVOList(List<User> userList) {
         if (CollUtil.isEmpty(userList)) {
@@ -170,6 +246,32 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 .collect(Collectors.toList());
     }
 
+    /**
+     * 从数据库中永久删除指定用户。
+     *
+     * 普通的 removeById 会受到实体逻辑删除配置影响，只把 isDelete 更新为 1；
+     * 这里调用 Mapper 中的明确 DELETE 语句，让数据库真正移除该用户记录。
+     *
+     * @param userId 需要永久删除的用户 id
+     * @return 数据库成功删除一条记录时返回 {@code true}
+     */
+    @Override
+    public boolean deleteUserPermanently(long userId) {
+        if (userId <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户 id 不合法");
+        }
+        return this.mapper.deleteByIdPermanently(userId) > 0;
+    }
+
+    /**
+     * 根据查询请求构造用户列表的数据库条件。
+     *
+     * 只有有效筛选值才会加入查询，同时限制可用排序字段，避免默认值误筛选数据或
+     * 非法字段进入排序语句。
+     *
+     * @param userQueryRequest 用户筛选、分页和排序参数
+     * @return 可交给 MyBatis-Flex 执行的查询条件
+     */
     @Override
     public QueryWrapper getQueryWrapper(UserQueryRequest userQueryRequest) {
         if (userQueryRequest == null) {
@@ -183,13 +285,30 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         String sortField = userQueryRequest.getSortField();
         String sortOrder = userQueryRequest.getSortOrder();
 
-        QueryWrapper queryWrapper = QueryWrapper.create()
-                .eq("id", id)
-                .eq("userRole", userRole)
-                .like("userAccount", userAccount)
-                .like("userName", userName)
-                .like("userProfile", userProfile);
+        QueryWrapper queryWrapper = QueryWrapper.create();
+        // Knife4j 会为数字字段生成 0，只有正数 id 才应作为真实查询条件。
+        if (id != null && id > 0) {
+            queryWrapper.eq("id", id);
+        }
+        if (StrUtil.isNotBlank(userRole)) {
+            queryWrapper.eq("userRole", userRole);
+        }
+        if (StrUtil.isNotBlank(userAccount)) {
+            queryWrapper.like("userAccount", userAccount);
+        }
+        if (StrUtil.isNotBlank(userName)) {
+            queryWrapper.like("userName", userName);
+        }
+        if (StrUtil.isNotBlank(userProfile)) {
+            queryWrapper.like("userProfile", userProfile);
+        }
         if (StrUtil.isNotBlank(sortField)) {
+            if (!USER_SORT_FIELDS.contains(sortField)) {
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "排序字段不合法");
+            }
+            if (!"ascend".equals(sortOrder) && !"descend".equals(sortOrder)) {
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "排序方式不合法");
+            }
             queryWrapper.orderBy(sortField, "ascend".equals(sortOrder));
         }
         return queryWrapper;

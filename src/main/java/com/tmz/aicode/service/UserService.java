@@ -92,6 +92,16 @@ public interface UserService extends IService<User> {
     List<UserVO> getUserVOList(List<User> userList);
 
     /**
+     * 从数据库中永久删除指定用户。
+     *
+     * 该操作不会修改逻辑删除字段，而是直接移除整条记录，删除后无法恢复。
+     *
+     * @param userId 需要永久删除的用户 id
+     * @return 数据库成功删除记录时返回 {@code true}
+     */
+    boolean deleteUserPermanently(long userId);
+
+    /**
      * 根据用户管理页面的筛选和排序参数构造查询条件。
      *
      * @param userQueryRequest 用户查询请求
