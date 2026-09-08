@@ -1,0 +1,5 @@
+# 本地 profile 会继续读取项目根目录中的个人模型配置。
+# 根目录文件不参与打包，部署环境可以改用环境变量或外部配置文件提供相同属性。
+spring:
+  config:
+    import: optional:file:./application_local.yml

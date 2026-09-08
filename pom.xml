@@ -32,12 +32,30 @@
         <knife4j.version>4.4.0</knife4j.version>
         <springdoc.version>2.8.9</springdoc.version>
         <mybatis-flex.version>1.11.0</mybatis-flex.version>
+        <!-- Surefire 使用延迟替换时需要这个属性始终存在，其他测试 Agent 也可以继续追加参数。 -->
+        <argLine></argLine>
     </properties>
     <dependencies>
         <dependency>
             <groupId>com.mybatis-flex</groupId>
             <artifactId>mybatis-flex-spring-boot3-starter</artifactId>
             <version>${mybatis-flex.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>1.1.0</version>
+        </dependency>
+        <!-- 将模型的增量响应适配为 Reactor Flux，便于后续通过 SSE 持续推送给前端。 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-reactor</artifactId>
+            <version>1.1.0-beta7</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai-spring-boot-starter</artifactId>
+            <version>1.1.0-beta7</version>
         </dependency>
         <!-- MyBatis-Flex 代码生成器 -->
         <dependency>
@@ -145,6 +163,26 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <!-- 把依赖的本地路径写入 Maven 属性，供测试 JVM 在启动时加载 Mockito Agent。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- JDK 21 会限制运行期间动态加载 Agent，因此在测试 JVM 启动时显式加载。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar}</argLine>
+                </configuration>
             </plugin>
         </plugins>
     </build>
