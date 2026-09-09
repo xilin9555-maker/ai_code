@@ -1,0 +1,453 @@
+package com.tmz.aicode.controller;
+
+import cn.hutool.json.JSONUtil;
+import cn.hutool.core.util.StrUtil;
+import com.mybatisflex.core.paginate.Page;
+import com.tmz.aicode.annotation.AuthCheck;
+import com.tmz.aicode.common.BaseResponse;
+import com.tmz.aicode.common.DeleteRequest;
+import com.tmz.aicode.common.ResultUtils;
+import com.tmz.aicode.constant.AppConstant;
+import com.tmz.aicode.constant.UserConstant;
+import com.tmz.aicode.exception.BusinessException;
+import com.tmz.aicode.exception.ErrorCode;
+import com.tmz.aicode.exception.ThrowUtils;
+import com.tmz.aicode.model.dto.app.AppAddRequest;
+import com.tmz.aicode.model.dto.app.AppAdminUpdateRequest;
+import com.tmz.aicode.model.dto.app.AppDeployRequest;
+import com.tmz.aicode.model.dto.app.AppQueryRequest;
+import com.tmz.aicode.model.dto.app.AppUpdateRequest;
+import com.tmz.aicode.model.entity.App;
+import com.tmz.aicode.model.entity.User;
+import com.tmz.aicode.model.enums.CodeGenTypeEnum;
+import com.tmz.aicode.model.vo.AppVO;
+import com.tmz.aicode.service.AppService;
+import com.tmz.aicode.service.UserService;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * 应用基础能力接口。
+ *
+ * 普通用户可以创建和管理自己的应用，也可以浏览精选应用；管理员接口额外提供全量查询、
+ * 任意应用维护和删除能力。所有响应继续使用项目统一的 BaseResponse 结构。
+ */
+@RestController
+@RequestMapping("/app")
+public class AppController {
+
+    /**
+     * 普通列表接口单页允许返回的最大数量，防止一次请求读取过多数据。
+     */
+    private static final int USER_PAGE_SIZE_LIMIT = 20;
+
+    /**
+     * 数据库中应用名称字段允许的最大长度。
+     */
+    private static final int APP_NAME_MAX_LENGTH = 256;
+
+    /**
+     * 数据库中封面地址字段允许的最大长度。
+     */
+    private static final int APP_COVER_MAX_LENGTH = 512;
+
+    private final AppService appService;
+
+    private final UserService userService;
+
+    public AppController(AppService appService, UserService userService) {
+        this.appService = appService;
+        this.userService = userService;
+    }
+
+    /**
+     * 创建应用。
+     *
+     * 当前用户只需提交初始化需求。服务端会绑定创建人，从需求前 12 个字符生成临时名称，
+     * 并设置默认的多文件生成方式，为后面的 AI 生成流程准备应用记录。
+     *
+     * @param appAddRequest 创建应用时填写的初始化需求
+     * @param request 当前请求，用于读取已经登录的用户
+     * @return 创建成功后的应用 id
+     */
+    @PostMapping("/add")
+    public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest,
+                                     HttpServletRequest request) {
+        ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
+        String initPrompt = StrUtil.trim(appAddRequest.getInitPrompt());
+        ThrowUtils.throwIf(StrUtil.isBlank(initPrompt),
+                ErrorCode.PARAMS_ERROR, "初始化需求不能为空");
+
+        User loginUser = userService.getLoginUser(request);
+        App app = new App();
+        app.setInitPrompt(initPrompt);
+        app.setUserId(loginUser.getId());
+        app.setAppName(initPrompt.substring(0, Math.min(initPrompt.length(), 12)));
+        app.setCodeGenType(CodeGenTypeEnum.MULTI_FILE.getValue());
+        app.setPriority(AppConstant.DEFAULT_APP_PRIORITY);
+
+        boolean saved = appService.save(app);
+        ThrowUtils.throwIf(!saved, ErrorCode.OPERATION_ERROR, "应用创建失败");
+        return ResultUtils.success(app.getId());
+    }
+
+    /**
+     * 修改当前用户自己的应用名称。
+     *
+     * @param appUpdateRequest 应用 id 和新名称
+     * @param request 当前请求，用于确认应用所有者
+     * @return 更新成功时返回 {@code true}
+     */
+    @PostMapping("/update")
+    public BaseResponse<Boolean> updateApp(@RequestBody AppUpdateRequest appUpdateRequest,
+                                            HttpServletRequest request) {
+        if (appUpdateRequest == null || appUpdateRequest.getId() == null
+                || appUpdateRequest.getId() <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        String appName = validateAndNormalizeAppName(appUpdateRequest.getAppName());
+        User loginUser = userService.getLoginUser(request);
+        App oldApp = getExistingApp(appUpdateRequest.getId());
+        ThrowUtils.throwIf(!Objects.equals(oldApp.getUserId(), loginUser.getId()),
+                ErrorCode.NO_AUTH_ERROR, "只能修改自己创建的应用");
+
+        App app = new App();
+        app.setId(oldApp.getId());
+        app.setAppName(appName);
+        app.setEditTime(LocalDateTime.now());
+        boolean updated = appService.updateById(app);
+        ThrowUtils.throwIf(!updated, ErrorCode.OPERATION_ERROR, "应用更新失败");
+        return ResultUtils.success(true);
+    }
+
+    /**
+     * 删除应用。
+     *
+     * 普通用户只能删除自己的应用，管理员也可以通过这个入口处理任意应用。实体已配置逻辑
+     * 删除，因此记录会被标记为已删除，并从后续常规查询结果中排除。
+     *
+     * @param deleteRequest 要删除的应用 id
+     * @param request 当前请求，用于校验操作者身份
+     * @return 删除成功时返回 {@code true}
+     */
+    @PostMapping("/delete")
+    public BaseResponse<Boolean> deleteApp(@RequestBody DeleteRequest deleteRequest,
+                                            HttpServletRequest request) {
+        Long id = validateDeleteRequest(deleteRequest);
+        User loginUser = userService.getLoginUser(request);
+        App oldApp = getExistingApp(id);
+        boolean isOwner = Objects.equals(oldApp.getUserId(), loginUser.getId());
+        boolean isAdmin = UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole());
+        ThrowUtils.throwIf(!isOwner && !isAdmin,
+                ErrorCode.NO_AUTH_ERROR, "只能删除自己创建的应用");
+
+        boolean removed = appService.removeById(id);
+        ThrowUtils.throwIf(!removed, ErrorCode.OPERATION_ERROR, "应用删除失败");
+        return ResultUtils.success(true);
+    }
+
+    /**
+     * 根据 id 获取应用详情。
+     *
+     * @param id 应用 id
+     * @return 应用信息以及创建者的公开资料
+     */
+    @GetMapping("/get/vo")
+    public BaseResponse<AppVO> getAppVOById(long id) {
+        ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
+        return ResultUtils.success(appService.getAppVO(getExistingApp(id)));
+    }
+
+    /**
+     * 分页获取当前用户创建的应用。
+     *
+     * userId 始终由 Session 中的登录用户确定，不接受客户端指定。这样即使请求体带有别人的
+     * userId，也不能借此查看他人的个人应用列表。
+     *
+     * @param appQueryRequest 页码、应用名称和排序条件
+     * @param request 当前请求，用于读取登录用户
+     * @return 当前用户的应用分页结果
+     */
+    @PostMapping("/my/list/page/vo")
+    public BaseResponse<Page<AppVO>> listMyAppVOByPage(
+            @RequestBody AppQueryRequest appQueryRequest,
+            HttpServletRequest request) {
+        validateUserPageRequest(appQueryRequest);
+        User loginUser = userService.getLoginUser(request);
+
+        AppQueryRequest safeQuery = copyPublicQuery(appQueryRequest);
+        safeQuery.setUserId(loginUser.getId());
+        return ResultUtils.success(queryAppVOPage(safeQuery));
+    }
+
+    /**
+     * 分页获取精选应用。
+     *
+     * 精选条件由服务端固定写入，客户端不能通过传入其他优先级扩大查询范围。
+     *
+     * @param appQueryRequest 页码、应用名称和排序条件
+     * @return 精选应用分页结果
+     */
+    @PostMapping("/good/list/page/vo")
+    public BaseResponse<Page<AppVO>> listGoodAppVOByPage(
+            @RequestBody AppQueryRequest appQueryRequest) {
+        validateUserPageRequest(appQueryRequest);
+
+        AppQueryRequest safeQuery = copyPublicQuery(appQueryRequest);
+        safeQuery.setPriority(AppConstant.GOOD_APP_PRIORITY);
+        return ResultUtils.success(queryAppVOPage(safeQuery));
+    }
+
+    /**
+     * 通过 SSE 持续返回应用代码生成结果。
+     *
+     * GET 请求便于浏览器直接使用 EventSource 建立连接，text/event-stream 告诉客户端保持
+     * 响应通道并逐条处理数据。Controller 只完成入口参数和登录状态校验，应用所有权、
+     * 生成类型选择、代码解析与文件保存统一交给应用服务及生成门面处理。
+     *
+     * @param appId 需要继续生成代码的应用 id
+     * @param message 用户本次提交的网站需求
+     * @param request 当前 HTTP 请求，用于读取 Session 中的登录用户
+     * 每个普通事件都把代码片段放入 JSON 的 d 字段。代码中的行首空格会因此成为 JSON
+     * 字符串内容，不会被 SSE 协议当作 data 字段的格式空格消费。生成流正常结束后还会发送
+     * done 事件，前端收到它便能确认代码已经完整生成；如果上游异常，done 事件不会发出。
+     *
+     * @return 依次包含代码片段的消息事件，以及正常结束时的 done 事件
+     */
+    @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
+                                                       @RequestParam String message,
+                                                       HttpServletRequest request) {
+        ThrowUtils.throwIf(appId == null || appId <= 0,
+                ErrorCode.PARAMS_ERROR, "应用 id 无效");
+        ThrowUtils.throwIf(StrUtil.isBlank(message),
+                ErrorCode.PARAMS_ERROR, "用户消息不能为空");
+
+        // 登录用户从服务端 Session 中取得，客户端不能通过请求参数伪造用户身份。
+        User loginUser = userService.getLoginUser(request);
+        Flux<String> contentFlux = appService.chatToGenCode(appId, message, loginUser);
+
+        return contentFlux
+                .map(chunk -> {
+                    // JSON 会保护代码片段内部的空格、换行和引号，前端读取 d 字段即可还原原文。
+                    String jsonData = JSONUtil.toJsonStr(Map.of("d", chunk));
+                    return ServerSentEvent.<String>builder()
+                            .data(jsonData)
+                            .build();
+                })
+                .concatWith(Mono.just(
+                        // concatWith 只会在代码流正常完成后执行，因此 done 可以作为成功结束标志。
+                        ServerSentEvent.<String>builder()
+                                .event("done")
+                                .data("")
+                                .build()
+                ));
+    }
+
+    /**
+     * 部署当前用户已经生成过代码的应用。
+     *
+     * Controller 只负责读取请求参数和登录身份，目录检查、所有权判断、文件复制及数据库
+     * 更新全部由应用服务完成，成功后返回可以直接访问的稳定地址。
+     *
+     * @param appDeployRequest 需要部署的应用 id
+     * @param request 当前 HTTP 请求，用于读取 Session 中的登录用户
+     * @return 部署完成后的公开访问地址
+     */
+    @PostMapping("/deploy")
+    public BaseResponse<String> deployApp(@RequestBody AppDeployRequest appDeployRequest,
+                                          HttpServletRequest request) {
+        ThrowUtils.throwIf(appDeployRequest == null,
+                ErrorCode.PARAMS_ERROR, "部署请求不能为空");
+        Long appId = appDeployRequest.getAppId();
+        ThrowUtils.throwIf(appId == null || appId <= 0,
+                ErrorCode.PARAMS_ERROR, "应用 id 不能为空");
+
+        User loginUser = userService.getLoginUser(request);
+        String deployUrl = appService.deployApp(appId, loginUser);
+        return ResultUtils.success(deployUrl);
+    }
+
+    /**
+     * 管理员删除任意应用。
+     *
+     * @param deleteRequest 要删除的应用 id
+     * @return 删除成功时返回 {@code true}
+     */
+    @PostMapping("/admin/delete")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<Boolean> deleteAppByAdmin(@RequestBody DeleteRequest deleteRequest) {
+        Long id = validateDeleteRequest(deleteRequest);
+        getExistingApp(id);
+        boolean removed = appService.removeById(id);
+        ThrowUtils.throwIf(!removed, ErrorCode.OPERATION_ERROR, "应用删除失败");
+        return ResultUtils.success(true);
+    }
+
+    /**
+     * 管理员更新应用展示信息。
+     *
+     * 名称、封面和优先级都采用按需更新。至少需要提交一个可修改字段，修改优先级为精选值
+     * 后，该应用就会出现在精选应用列表中。
+     *
+     * @param updateRequest 应用 id 以及需要更新的字段
+     * @return 更新成功时返回 {@code true}
+     */
+    @PostMapping("/admin/update")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<Boolean> updateAppByAdmin(
+            @RequestBody AppAdminUpdateRequest updateRequest) {
+        if (updateRequest == null || updateRequest.getId() == null
+                || updateRequest.getId() <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        getExistingApp(updateRequest.getId());
+        ThrowUtils.throwIf(updateRequest.getAppName() == null
+                        && updateRequest.getCover() == null
+                        && updateRequest.getPriority() == null,
+                ErrorCode.PARAMS_ERROR, "至少填写一个需要更新的字段");
+
+        App app = new App();
+        app.setId(updateRequest.getId());
+        if (updateRequest.getAppName() != null) {
+            app.setAppName(validateAndNormalizeAppName(updateRequest.getAppName()));
+        }
+        if (updateRequest.getCover() != null) {
+            ThrowUtils.throwIf(updateRequest.getCover().length() > APP_COVER_MAX_LENGTH,
+                    ErrorCode.PARAMS_ERROR, "封面地址不能超过 512 个字符");
+            app.setCover(updateRequest.getCover().trim());
+        }
+        if (updateRequest.getPriority() != null) {
+            ThrowUtils.throwIf(updateRequest.getPriority() < 0,
+                    ErrorCode.PARAMS_ERROR, "应用优先级不能小于 0");
+            app.setPriority(updateRequest.getPriority());
+        }
+        app.setEditTime(LocalDateTime.now());
+
+        boolean updated = appService.updateById(app);
+        ThrowUtils.throwIf(!updated, ErrorCode.OPERATION_ERROR, "应用更新失败");
+        return ResultUtils.success(true);
+    }
+
+    /**
+     * 管理员分页查询全部应用。
+     *
+     * @param appQueryRequest 完整的分页、筛选和排序条件
+     * @return 应用分页结果
+     */
+    @PostMapping("/admin/list/page/vo")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<Page<AppVO>> listAppVOByPageByAdmin(
+            @RequestBody AppQueryRequest appQueryRequest) {
+        validateBasePageRequest(appQueryRequest);
+        return ResultUtils.success(queryAppVOPage(appQueryRequest));
+    }
+
+    /**
+     * 管理员根据 id 获取应用详情。
+     *
+     * @param id 应用 id
+     * @return 应用信息以及创建者的公开资料
+     */
+    @GetMapping("/admin/get/vo")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<AppVO> getAppVOByIdByAdmin(long id) {
+        ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
+        return ResultUtils.success(appService.getAppVO(getExistingApp(id)));
+    }
+
+    /**
+     * 查询应用分页数据，并将数据库实体统一转换为视图对象。
+     */
+    private Page<AppVO> queryAppVOPage(AppQueryRequest queryRequest) {
+        long pageNum = queryRequest.getPageNum();
+        long pageSize = queryRequest.getPageSize();
+        Page<App> appPage = appService.page(
+                Page.of(pageNum, pageSize),
+                appService.getQueryWrapper(queryRequest)
+        );
+        Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
+        List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
+        appVOPage.setRecords(appVOList);
+        return appVOPage;
+    }
+
+    /**
+     * 只复制普通列表允许使用的名称和排序条件，受保护条件随后由服务端设置。
+     */
+    private AppQueryRequest copyPublicQuery(AppQueryRequest source) {
+        AppQueryRequest target = new AppQueryRequest();
+        target.setPageNum(source.getPageNum());
+        target.setPageSize(source.getPageSize());
+        target.setSortField(source.getSortField());
+        target.setSortOrder(source.getSortOrder());
+        target.setAppName(source.getAppName());
+        return target;
+    }
+
+    /**
+     * 检查普通列表的页码与单页数量。
+     */
+    private void validateUserPageRequest(AppQueryRequest queryRequest) {
+        validateBasePageRequest(queryRequest);
+        ThrowUtils.throwIf(queryRequest.getPageSize() > USER_PAGE_SIZE_LIMIT,
+                ErrorCode.PARAMS_ERROR, "每页最多查询 20 个应用");
+    }
+
+    /**
+     * 检查所有分页接口都必须满足的基础条件。
+     */
+    private void validateBasePageRequest(AppQueryRequest queryRequest) {
+        ThrowUtils.throwIf(queryRequest == null, ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(queryRequest.getPageNum() <= 0,
+                ErrorCode.PARAMS_ERROR, "页码必须大于 0");
+        ThrowUtils.throwIf(queryRequest.getPageSize() <= 0,
+                ErrorCode.PARAMS_ERROR, "每页数量必须大于 0");
+    }
+
+    /**
+     * 查询一条仍然有效的应用记录，找不到时返回统一的业务异常。
+     */
+    private App getExistingApp(long id) {
+        App app = appService.getById(id);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在或已经被删除");
+        return app;
+    }
+
+    /**
+     * 检查删除请求并返回已经验证过的应用 id。
+     */
+    private Long validateDeleteRequest(DeleteRequest deleteRequest) {
+        if (deleteRequest == null || deleteRequest.getId() == null
+                || deleteRequest.getId() <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        return deleteRequest.getId();
+    }
+
+    /**
+     * 检查应用名称并去掉首尾空白。
+     */
+    private String validateAndNormalizeAppName(String appName) {
+        ThrowUtils.throwIf(StrUtil.isBlank(appName),
+                ErrorCode.PARAMS_ERROR, "应用名称不能为空");
+        String normalizedName = appName.trim();
+        ThrowUtils.throwIf(normalizedName.length() > APP_NAME_MAX_LENGTH,
+                ErrorCode.PARAMS_ERROR, "应用名称不能超过 256 个字符");
+        return normalizedName;
+    }
+}

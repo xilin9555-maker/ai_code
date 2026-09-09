@@ -15,12 +15,17 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -63,6 +68,17 @@ class AiCodeApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(content().json("""
                         {"code":50000,"data":null,"message":"系统错误"}
+                        """));
+    }
+
+    @Test
+    void malformedJsonReturnsClearParameterError() throws Exception {
+        mockMvc.perform(post("/api/test/json-body").contextPath("/api")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{userAccount:tmz123}"))
+                .andExpect(status().isOk())
+                .andExpect(content().json("""
+                        {"code":40000,"data":null,"message":"请求体格式错误"}
                         """));
     }
 
@@ -132,6 +148,11 @@ class AiCodeApplicationTests {
         @GetMapping("/test/long-id")
         public BaseResponse<Long> longId() {
             return ResultUtils.success(1900000000000000001L);
+        }
+
+        @PostMapping("/test/json-body")
+        public BaseResponse<String> jsonBody(@RequestBody Map<String, Object> body) {
+            return ResultUtils.success(String.valueOf(body.size()));
         }
     }
 }

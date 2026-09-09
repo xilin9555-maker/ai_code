@@ -4,10 +4,13 @@ import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import jakarta.annotation.Resource;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import reactor.core.publisher.Flux;
 
 import java.io.File;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -34,7 +37,8 @@ class AiCodeGeneratorFacadeIntegrationTest {
     void generateAndSaveHtmlCode() {
         File outputDirectory = aiCodeGeneratorFacade.generateAndSaveCode(
                 "创建一个简洁的个人介绍网站，包含技能、项目经历和联系方式",
-                CodeGenTypeEnum.HTML
+                CodeGenTypeEnum.HTML,
+                1L
         );
 
         assertTrue(outputDirectory.isDirectory(), "生成结果目录应当存在");
@@ -54,7 +58,8 @@ class AiCodeGeneratorFacadeIntegrationTest {
     void generateAndSaveMultiFileCode() {
         File outputDirectory = aiCodeGeneratorFacade.generateAndSaveCode(
                 "创建一个简洁的任务记录网站，支持添加、完成和筛选任务",
-                CodeGenTypeEnum.MULTI_FILE
+                CodeGenTypeEnum.MULTI_FILE,
+                2L
         );
 
         assertTrue(outputDirectory.isDirectory(), "生成结果目录应当存在");
@@ -62,5 +67,26 @@ class AiCodeGeneratorFacadeIntegrationTest {
         assertTrue(new File(outputDirectory, "style.css").isFile(), "style.css 应当存在");
         assertTrue(new File(outputDirectory, "script.js").isFile(), "script.js 应当存在");
         System.out.println("多文件模式生成目录：" + outputDirectory.getAbsolutePath());
+    }
+
+    /**
+     * 使用真实模型验证多文件流式生成。
+     *
+     * collectList 会订阅 Flux 并等待模型发送完成，门面随后解析全部片段并将文件写入磁盘。
+     * 这个方法会产生真实模型费用，由需要检查实际流式效果时手动运行。
+     */
+    @Test
+    void generateAndSaveCodeStream() {
+        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(
+                "创建一个简洁的任务记录网站，支持添加、完成和筛选任务",
+                CodeGenTypeEnum.MULTI_FILE,
+                3L
+        );
+
+        List<String> chunks = codeStream.collectList().block();
+        assertNotNull(chunks, "模型流式返回结果不能为 null");
+        String completeContent = String.join("", chunks);
+        assertFalse(completeContent.isBlank(), "模型流式返回内容不能为空");
+        System.out.println("本次共收到 " + chunks.size() + " 个代码片段");
     }
 }

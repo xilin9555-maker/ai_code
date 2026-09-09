@@ -1,0 +1,210 @@
+package com.tmz.aicode.service.impl;
+
+import cn.hutool.core.io.FileUtil;
+import com.tmz.aicode.constant.AppConstant;
+import com.tmz.aicode.core.AiCodeGeneratorFacade;
+import com.tmz.aicode.exception.BusinessException;
+import com.tmz.aicode.model.dto.app.AppQueryRequest;
+import com.tmz.aicode.model.entity.App;
+import com.tmz.aicode.model.entity.User;
+import com.tmz.aicode.model.vo.AppVO;
+import com.tmz.aicode.model.vo.UserVO;
+import com.tmz.aicode.service.UserService;
+import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
+
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+/**
+ * 应用服务的本地单元测试。
+ *
+ * 测试只使用内存对象和模拟的用户服务，不会连接数据库，也不会调用模型服务。
+ */
+class AppServiceImplTest {
+
+    /**
+     * 重复部署已有 deployKey 的应用时应覆盖静态文件并保持访问地址不变。
+     */
+    @Test
+    void deployAppCopiesFilesAndKeepsExistingUrl() {
+        UserService userService = mock(UserService.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(
+                userService,
+                mock(AiCodeGeneratorFacade.class)
+        ));
+        long appId = 920001L;
+        String deployKey = "aB3xY9";
+        User loginUser = User.builder().id(1001L).build();
+        App app = App.builder()
+                .id(appId)
+                .userId(loginUser.getId())
+                .codeGenType("multi_file")
+                .deployKey(deployKey)
+                .build();
+        File sourceDir = new File(
+                AppConstant.CODE_OUTPUT_ROOT_DIR,
+                "multi_file_" + appId
+        );
+        File deployDir = new File(AppConstant.CODE_DEPLOY_ROOT_DIR, deployKey);
+
+        try {
+            FileUtil.mkdir(sourceDir);
+            FileUtil.writeString(
+                    "<h1>部署测试</h1>",
+                    new File(sourceDir, "index.html"),
+                    StandardCharsets.UTF_8
+            );
+            doReturn(app).when(appService).getById(appId);
+            doReturn(true).when(appService).updateById(argThat(update ->
+                    update != null
+                            && Long.valueOf(appId).equals(update.getId())
+                            && deployKey.equals(update.getDeployKey())
+                            && update.getDeployedTime() != null
+            ));
+
+            String deployUrl = appService.deployApp(appId, loginUser);
+
+            assertEquals("http://localhost/" + deployKey + "/", deployUrl);
+            assertEquals(
+                    "<h1>部署测试</h1>",
+                    FileUtil.readString(new File(deployDir, "index.html"), StandardCharsets.UTF_8)
+            );
+        } finally {
+            FileUtil.del(sourceDir);
+            FileUtil.del(deployDir);
+        }
+    }
+
+    /**
+     * 一页中同一用户创建的多个应用应只触发一次批量用户查询。
+     */
+    @Test
+    void getAppVOListLoadsUsersInOneBatch() {
+        UserService userService = mock(UserService.class);
+        AppServiceImpl appService = new AppServiceImpl(
+                userService,
+                mock(AiCodeGeneratorFacade.class)
+        );
+        User user = User.builder().id(1001L).userName("创建者").build();
+        UserVO userVO = new UserVO();
+        userVO.setId(user.getId());
+        userVO.setUserName(user.getUserName());
+        when(userService.listByIds(anyCollection())).thenReturn(List.of(user));
+        when(userService.getUserVO(user)).thenReturn(userVO);
+
+        List<App> apps = List.of(
+                App.builder().id(1L).appName("作品一").userId(user.getId()).build(),
+                App.builder().id(2L).appName("作品二").userId(user.getId()).build()
+        );
+        List<AppVO> result = appService.getAppVOList(apps);
+
+        assertEquals(2, result.size());
+        assertEquals("作品一", result.get(0).getAppName());
+        assertSame(userVO, result.get(0).getUser());
+        assertSame(userVO, result.get(1).getUser());
+        verify(userService).listByIds(anyCollection());
+        verify(userService, never()).getById(user.getId());
+    }
+
+    /**
+     * 非白名单排序字段不能进入查询条件，避免客户端把任意内容拼进 SQL。
+     */
+    @Test
+    void getQueryWrapperRejectsUnknownSortField() {
+        AppServiceImpl appService = new AppServiceImpl(
+                mock(UserService.class),
+                mock(AiCodeGeneratorFacade.class)
+        );
+        AppQueryRequest request = new AppQueryRequest();
+        request.setSortField("unknownColumn");
+        request.setSortOrder("ascend");
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> appService.getQueryWrapper(request)
+        );
+
+        assertEquals("排序字段不合法", exception.getMessage());
+    }
+
+    /**
+     * 通过所有权校验后，应用服务应把正确的生成类型、消息和 appId 交给门面。
+     */
+    @Test
+    void chatToGenCodeDelegatesAuthorizedAppToFacade() {
+        UserService userService = mock(UserService.class);
+        AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(userService, facade));
+        long appId = 2001L;
+        User loginUser = User.builder().id(1001L).build();
+        App app = App.builder()
+                .id(appId)
+                .userId(loginUser.getId())
+                .codeGenType("multi_file")
+                .build();
+        doReturn(app).when(appService).getById(appId);
+        when(facade.generateAndSaveCodeStream(
+                "生成任务管理网站",
+                com.tmz.aicode.model.enums.CodeGenTypeEnum.MULTI_FILE,
+                appId
+        )).thenReturn(Flux.just("第一段", "第二段"));
+
+        List<String> chunks = appService.chatToGenCode(
+                        appId,
+                        " 生成任务管理网站 ",
+                        loginUser
+                )
+                .collectList()
+                .block();
+
+        assertEquals(List.of("第一段", "第二段"), chunks);
+        verify(facade).generateAndSaveCodeStream(
+                "生成任务管理网站",
+                com.tmz.aicode.model.enums.CodeGenTypeEnum.MULTI_FILE,
+                appId
+        );
+    }
+
+    /**
+     * 当前用户不是应用创建者时，应在调用生成门面前结束流程。
+     */
+    @Test
+    void chatToGenCodeRejectsAnotherUsersApp() {
+        AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(mock(UserService.class), facade));
+        long appId = 2002L;
+        App app = App.builder()
+                .id(appId)
+                .userId(1001L)
+                .codeGenType("multi_file")
+                .build();
+        doReturn(app).when(appService).getById(appId);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> appService.chatToGenCode(
+                        appId,
+                        "生成作品展示网站",
+                        User.builder().id(1002L).build()
+                )
+        );
+
+        assertEquals("只能为自己创建的应用生成代码", exception.getMessage());
+        verifyNoInteractions(facade);
+    }
+}
