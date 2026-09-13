@@ -24,6 +24,8 @@ import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,6 +37,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -97,7 +100,7 @@ public class AppController {
         app.setInitPrompt(initPrompt);
         app.setUserId(loginUser.getId());
         app.setAppName(initPrompt.substring(0, Math.min(initPrompt.length(), 12)));
-        app.setCodeGenType(CodeGenTypeEnum.MULTI_FILE.getValue());
+        app.setCodeGenType(CodeGenTypeEnum.VUE_PROJECT.getValue());
         app.setPriority(AppConstant.DEFAULT_APP_PRIORITY);
 
         boolean saved = appService.save(app);
@@ -228,14 +231,21 @@ public class AppController {
      *
      * @return 依次包含代码片段的消息事件，以及正常结束时的 done 事件
      */
-    @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @GetMapping(value = "/chat/gen/code",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
                                                        @RequestParam String message,
-                                                       HttpServletRequest request) {
+                                                       HttpServletRequest request,
+                                                       HttpServletResponse response) {
         ThrowUtils.throwIf(appId == null || appId <= 0,
                 ErrorCode.PARAMS_ERROR, "应用 id 无效");
         ThrowUtils.throwIf(StrUtil.isBlank(message),
                 ErrorCode.PARAMS_ERROR, "用户消息不能为空");
+
+        // 明确字符集并禁止中间代理缓冲，确保中文代码片段到达后可以立即被浏览器处理。
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
 
         // 登录用户从服务端 Session 中取得，客户端不能通过请求参数伪造用户身份。
         User loginUser = userService.getLoginUser(request);
@@ -253,7 +263,8 @@ public class AppController {
                         // concatWith 只会在代码流正常完成后执行，因此 done 可以作为成功结束标志。
                         ServerSentEvent.<String>builder()
                                 .event("done")
-                                .data("")
+                                // 非空数据可以确保浏览器稳定派发这个自定义事件。
+                                .data("{\"completed\":true}")
                                 .build()
                 ));
     }

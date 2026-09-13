@@ -1,5 +1,7 @@
 package com.tmz.aicode.core;
 
+import cn.hutool.core.util.IdUtil;
+import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import jakarta.annotation.Resource;
 import org.junit.jupiter.api.Test;
@@ -88,5 +90,36 @@ class AiCodeGeneratorFacadeIntegrationTest {
         String completeContent = String.join("", chunks);
         assertFalse(completeContent.isBlank(), "模型流式返回内容不能为空");
         System.out.println("本次共收到 " + chunks.size() + " 个代码片段");
+    }
+
+    /**
+     * 使用真实模型和文件工具生成完整 Vue 工程。
+     *
+     * 该方法会产生真实模型调用和额度消耗，只在需要人工验证时单独运行。生成过程结束后
+     * 不删除文件，控制台会输出本次 appId 和工程目录，便于继续检查或启动 Vite。
+     */
+    @Test
+    void generateVueProjectCodeStreamWithRealModel() {
+        long appId = IdUtil.getSnowflakeNextId();
+        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(
+                "创建一个简洁的任务管理网站，支持添加、完成、筛选和删除任务,代码不超过200行",
+                CodeGenTypeEnum.VUE_PROJECT,
+                appId
+        );
+
+        List<String> chunks = codeStream.collectList().block();
+        assertNotNull(chunks, "模型流式返回结果不能为 null");
+        assertFalse(String.join("", chunks).isBlank(), "模型流式返回内容不能为空");
+
+        File projectDirectory = new File(
+                AppConstant.CODE_OUTPUT_ROOT_DIR,
+                "vue_project_" + appId
+        );
+        assertTrue(projectDirectory.isDirectory(), "Vue 工程目录应当存在");
+        assertTrue(new File(projectDirectory, "package.json").isFile(), "package.json 应当存在");
+        assertTrue(new File(projectDirectory, "index.html").isFile(), "index.html 应当存在");
+
+        System.out.println("Vue 工程 appId：" + appId);
+        System.out.println("Vue 工程生成目录：" + projectDirectory.getAbsolutePath());
     }
 }

@@ -282,6 +282,7 @@ a:focus-visible {
 }
 .quick-ideas {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   align-items: center;
   gap: 9px;
@@ -347,7 +348,7 @@ a:focus-visible {
 }
 .inspiration-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 22px;
 }
 .inspiration-card {
@@ -379,9 +380,13 @@ a:focus-visible {
 .preview-art.planner {
   background: #e7e3f0;
 }
+.preview-art.shop {
+  background: #dfe7ed;
+}
 .mini-portfolio,
 .mini-coffee,
-.mini-planner {
+.mini-planner,
+.mini-shop {
   height: 187px;
   padding: 13px 15px;
   border-radius: 5px 5px 0 0;
@@ -578,6 +583,43 @@ a:focus-visible {
 .mini-progress small {
   font-size: 5px;
   color: #9a92aa;
+}
+.mini-shop {
+  color: #344454;
+  background: #f7f9fa;
+}
+.shop-copy {
+  padding-top: 14px;
+}
+.shop-copy strong {
+  display: block;
+  margin-top: 6px;
+  font-family: Georgia, 'Songti SC', serif;
+  font-size: 17px;
+  line-height: 1.35;
+}
+.shop-products {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 11px;
+}
+.shop-products span {
+  display: grid;
+  height: 55px;
+  place-items: center;
+  border-radius: 3px;
+  color: #6b7d8c;
+  background: #e3e9ed;
+  font-size: 18px;
+}
+.shop-products span:nth-child(2) {
+  color: #8d765d;
+  background: #ebe5dc;
+}
+.shop-products span:nth-child(3) {
+  color: #778771;
+  background: #e2e8df;
 }
 .inspiration-info {
   padding: 16px 2px 0;
@@ -905,6 +947,7 @@ a:focus-visible {
   }
   .inspiration-grid,
   .draft-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
   }
   .preview-art {

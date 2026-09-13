@@ -2,7 +2,10 @@ package com.tmz.aicode.ai;
 
 import com.tmz.aicode.ai.model.HtmlCodeResult;
 import com.tmz.aicode.ai.model.MultiFileCodeResult;
+import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.TokenStream;
+import dev.langchain4j.service.UserMessage;
 import reactor.core.publisher.Flux;
 
 /**
@@ -60,4 +63,19 @@ public interface AiCodeGeneratorService {
      */
     @SystemMessage(fromResource = "prompt/codegen-multi-file-stream-system-prompt.txt")
     Flux<String> generateMultiFileCodeStream(String userMessage);
+
+    /**
+     * 通过文件工具逐步生成完整的 Vue 工程。
+     *
+     * appId 既是对话记忆标识，也是文件工具的目录标识。LangChain4j 会把标有
+     * {@link MemoryId} 的值放入当前调用上下文，FileWriteTool 再通过 ToolMemoryId
+     * 取得同一个值，确保本轮生成的全部文件都写入当前应用目录。
+     *
+     * @param appId 当前应用 id，用于隔离会话记忆和工程目录
+     * @param userMessage 用户对工程功能、页面和视觉效果的描述
+     * @return 可以监听普通文本、工具请求和工具执行结果的 LangChain4j 流
+     */
+    @SystemMessage(fromResource = "prompt/codegen-vue-project-system-prompt.txt")
+    TokenStream generateVueProjectCodeStream(@MemoryId long appId,
+                                              @UserMessage String userMessage);
 }

@@ -6,23 +6,36 @@ import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import reactor.core.publisher.Flux;
 
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
 
 /**
  * 应用 SSE 接口的本地单元测试。
@@ -40,12 +53,16 @@ class AppControllerTest {
                 "chatToGenCode",
                 Long.class,
                 String.class,
-                HttpServletRequest.class
+                HttpServletRequest.class,
+                HttpServletResponse.class
         );
         GetMapping mapping = method.getAnnotation(GetMapping.class);
 
         assertArrayEquals(new String[]{"/chat/gen/code"}, mapping.value());
-        assertArrayEquals(new String[]{MediaType.TEXT_EVENT_STREAM_VALUE}, mapping.produces());
+        assertArrayEquals(
+                new String[]{MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8"},
+                mapping.produces()
+        );
     }
 
     /**
@@ -58,6 +75,7 @@ class AppControllerTest {
         UserService userService = mock(UserService.class);
         AppController controller = new AppController(appService, userService);
         MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
         User loginUser = User.builder().id(1001L).build();
         when(userService.getLoginUser(request)).thenReturn(loginUser);
         when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser))
@@ -66,7 +84,8 @@ class AppControllerTest {
         List<ServerSentEvent<String>> events = controller.chatToGenCode(
                         2001L,
                         "生成任务管理网站",
-                        request
+                        request,
+                        response
                 )
                 .collectList()
                 .block();
@@ -75,9 +94,50 @@ class AppControllerTest {
         assertEquals("  第一段\n", JSONUtil.parseObj(events.get(0).data()).getStr("d"));
         assertEquals("第二段", JSONUtil.parseObj(events.get(1).data()).getStr("d"));
         assertEquals("done", events.get(2).event());
-        assertEquals("", events.get(2).data());
+        assertTrue(JSONUtil.parseObj(events.get(2).data()).getBool("completed"));
+        assertEquals("UTF-8", response.getCharacterEncoding());
+        assertEquals("no-cache, no-transform", response.getHeader(HttpHeaders.CACHE_CONTROL));
+        assertEquals("no", response.getHeader("X-Accel-Buffering"));
         verify(userService).getLoginUser(request);
         verify(appService).chatToGenCode(2001L, "生成任务管理网站", loginUser);
+    }
+
+    /**
+     * 通过 Spring MVC 的真实返回值处理链验证 SSE 文本格式，而不只检查 Java 对象。
+     * 模拟服务直接发出两个固定片段，因此不会连接数据库或调用大模型。
+     */
+    @Test
+    void chatToGenCodeWritesBrowserCompatibleSseFrames() throws Exception {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        AppController controller = new AppController(appService, userService);
+        User loginUser = User.builder().id(1001L).build();
+        when(userService.getLoginUser(org.mockito.ArgumentMatchers.any(HttpServletRequest.class)))
+                .thenReturn(loginUser);
+        when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser))
+                .thenReturn(Flux.just("chunk-1", "chunk-2"));
+
+        MockMvc mockMvc = standaloneSetup(controller).build();
+        MvcResult pendingResult = mockMvc
+                .perform(get("/app/chat/gen/code")
+                        .param("appId", "2001")
+                        .param("message", "生成任务管理网站")
+                        .accept(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String body = mockMvc
+                .perform(asyncDispatch(pendingResult))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        assertTrue(body.contains("data:{\"d\":\"chunk-1\"}"), body);
+        assertTrue(body.contains("data:{\"d\":\"chunk-2\"}"), body);
+        assertTrue(body.contains("event:done"), body);
+        assertTrue(body.contains("data:{\"completed\":true}"), body);
     }
 
     /**
@@ -89,6 +149,7 @@ class AppControllerTest {
         UserService userService = mock(UserService.class);
         AppController controller = new AppController(appService, userService);
         MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
         User loginUser = User.builder().id(1001L).build();
         when(userService.getLoginUser(request)).thenReturn(loginUser);
         when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser))
@@ -100,7 +161,7 @@ class AppControllerTest {
         List<ServerSentEvent<String>> receivedEvents = new java.util.ArrayList<>();
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
-                () -> controller.chatToGenCode(2001L, "生成任务管理网站", request)
+                () -> controller.chatToGenCode(2001L, "生成任务管理网站", request, response)
                         .doOnNext(receivedEvents::add)
                         .then()
                         .block()
@@ -126,7 +187,8 @@ class AppControllerTest {
                 () -> controller.chatToGenCode(
                         2001L,
                         "   ",
-                        new MockHttpServletRequest()
+                        new MockHttpServletRequest(),
+                        new MockHttpServletResponse()
                 )
         );
 

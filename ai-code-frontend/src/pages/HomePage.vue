@@ -1,39 +1,166 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { message } from 'ant-design-vue'
+import { Empty, message, Pagination, Skeleton } from 'ant-design-vue'
 import {
+  ArrowRightOutlined,
   ArrowUpOutlined,
   BulbOutlined,
   EditOutlined,
   FolderOpenOutlined,
+  ReloadOutlined,
+  SearchOutlined,
 } from '@ant-design/icons-vue'
+import AppCard from '@/components/AppCard.vue'
 import InspirationCard from '@/components/InspirationCard.vue'
+import { addApp, listGoodAppVoByPage, listMyAppVoByPage } from '@/api/appController'
 import { inspirations } from '@/data/inspirations'
-import { useDraftStore } from '@/stores/drafts'
+import { useLoginUserStore } from '@/stores/loginUser'
+import { normalizeApp, type AppView } from '@/utils/app'
 
-const drafts = useDraftStore()
 const router = useRouter()
+const loginUserStore = useLoginUserStore()
+const prompt = ref('')
 const promptInput = ref<{ focus: () => void } | null>(null)
+const creating = ref(false)
+const myAppsLoading = ref(false)
+const goodAppsLoading = ref(false)
+const myApps = ref<AppView[]>([])
+const goodApps = ref<AppView[]>([])
+const myTotal = ref(0)
+const goodTotal = ref(0)
+
+/** 首页使用较小的分页，让作品卡片保持舒展，也避免一次加载过多封面。 */
+const myQuery = reactive({ pageNum: 1, pageSize: 6, appName: '' })
+const goodQuery = reactive({ pageNum: 1, pageSize: 6, appName: '' })
+const isLoggedIn = computed(() => Boolean(loginUserStore.loginUser.id))
+
+/**
+ * 把灵感示例放入输入框并将页面滚动到创作区，用户仍可继续修改后再提交。
+ */
 async function selectIdea(value: string) {
-  drafts.useExample(value)
+  prompt.value = value
   await nextTick()
   promptInput.value?.focus()
   document.querySelector('#idea-composer')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
-function saveIdea() {
+
+/**
+ * 创建应用记录后进入生成工作台。
+ * 这里只保存初始化需求，真正的 AI 生成在工作台通过 SSE 发起，页面可以实时展示进度。
+ */
+async function createApplication() {
+  const initPrompt = prompt.value.trim()
+  if (creating.value || initPrompt.length < 3) return
+
+  if (!isLoggedIn.value) {
+    sessionStorage.setItem('pending-app-prompt', initPrompt)
+    message.info('登录后即可用这段描述创建应用')
+    await router.push({ path: '/user/login', query: { redirect: '/?resume=1' } })
+    return
+  }
+
+  creating.value = true
   try {
-    drafts.save()
-    message.success('创意已保存在当前浏览器')
-    router.push('/drafts')
+    const response = await addApp({ initPrompt })
+    if (response.data.code === 0 && response.data.data != null) {
+      // 服务端的 Long 可能超过 JavaScript 安全整数范围，因此路由中始终保留原始字符串。
+      const appId = String(response.data.data)
+      prompt.value = ''
+      sessionStorage.removeItem('pending-app-prompt')
+      // 工作台会先读取历史记录，确认这是一个空会话后再自动发送初始化需求。
+      await router.push(`/app/chat/${appId}`)
+    }
   } catch (error) {
-    message.error(
-      error instanceof Error && error.message.includes('创意描述')
-        ? error.message
-        : '保存失败，请检查浏览器存储空间或隐私设置',
-    )
+    message.error(error instanceof Error ? error.message : '创建应用失败，请稍后重试')
+  } finally {
+    creating.value = false
   }
 }
+
+/** 查询当前账号创建的应用，列表只会由后端 Session 对应的用户范围产生。 */
+async function loadMyApps() {
+  if (!isLoggedIn.value || myAppsLoading.value) return
+  myAppsLoading.value = true
+  try {
+    const response = await listMyAppVoByPage({
+      ...myQuery,
+      appName: myQuery.appName.trim() || undefined,
+      sortField: 'createTime',
+      sortOrder: 'descend',
+    })
+    const page = response.data.data
+    myApps.value = (page?.records ?? []).map(normalizeApp)
+    myTotal.value = Number(page?.totalRow ?? 0)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '获取我的应用失败')
+  } finally {
+    myAppsLoading.value = false
+  }
+}
+
+/** 查询由管理员设为精选的公开应用，未登录访客也可以浏览。 */
+async function loadGoodApps() {
+  if (goodAppsLoading.value) return
+  goodAppsLoading.value = true
+  try {
+    const response = await listGoodAppVoByPage({
+      ...goodQuery,
+      appName: goodQuery.appName.trim() || undefined,
+      sortField: 'createTime',
+      sortOrder: 'descend',
+    })
+    const page = response.data.data
+    goodApps.value = (page?.records ?? []).map(normalizeApp)
+    goodTotal.value = Number(page?.totalRow ?? 0)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '获取精选应用失败')
+  } finally {
+    goodAppsLoading.value = false
+  }
+}
+
+async function changeMyPage(page: number) {
+  myQuery.pageNum = page
+  await loadMyApps()
+}
+
+async function changeGoodPage(page: number) {
+  goodQuery.pageNum = page
+  await loadGoodApps()
+}
+
+/** 新的名称条件从第一页查询，避免沿用旧页码导致明明有结果却显示空列表。 */
+async function searchMyApps() {
+  myQuery.pageNum = 1
+  await loadMyApps()
+}
+
+async function searchGoodApps() {
+  goodQuery.pageNum = 1
+  await loadGoodApps()
+}
+
+/** 登录或注销后立即刷新个人作品区，使首页身份状态与服务端保持一致。 */
+watch(
+  () => loginUserStore.loginUser.id,
+  (userId) => {
+    if (userId) {
+      myQuery.pageNum = 1
+      void loadMyApps()
+    } else {
+      myApps.value = []
+      myTotal.value = 0
+    }
+  },
+)
+
+onMounted(() => {
+  const pendingPrompt = sessionStorage.getItem('pending-app-prompt')
+  if (pendingPrompt) prompt.value = pendingPrompt
+  void loadGoodApps()
+  if (isLoggedIn.value) void loadMyApps()
+})
 </script>
 
 <template>
@@ -41,53 +168,148 @@ function saveIdea() {
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-orbit orbit-one" aria-hidden="true">✳</div>
       <div class="hero-orbit orbit-two" aria-hidden="true">✦</div>
-      <span class="eyebrow"
-        ><span /> 想法的下一站，是作品 <span class="edition">EARLY ACCESS</span></span
-      >
+      <span class="eyebrow">
+        <span /> 想法的下一站，是作品 <span class="edition">AI BUILDER</span>
+      </span>
       <h1 id="hero-title">
-        让想法，<span class="hero-accent"
-          >即刻成形<svg viewBox="0 0 300 16" aria-hidden="true">
-            <path d="M4 10Q130 -2 296 8M55 14Q186 4 268 12" /></svg></span
-        >。
+        <span class="hero-accent">
+          AI 应用
+          <svg viewBox="0 0 300 16" aria-hidden="true">
+            <path d="M4 10Q130 -2 296 8M55 14Q186 4 268 12" />
+          </svg>
+        </span>
+        生成平台
       </h1>
       <p class="hero-description">
-        一句描述，开启你的下一件作品。<br class="mobile-break" />把创造留给自己，把复杂交给 AI。
+        一句话轻松创建网站应用。<br
+          class="mobile-break"
+        />描述页面、功能和风格，实时看见想法变成可以运行的网站。
       </p>
-      <form id="idea-composer" class="idea-composer" @submit.prevent="saveIdea">
-        <label for="idea-input" class="composer-label"
-          ><EditOutlined />
-          {{ drafts.editingId ? '继续打磨你的想法' : '今天，你想创造什么？' }}</label
-        >
+
+      <form id="idea-composer" class="idea-composer" @submit.prevent="createApplication">
+        <label for="idea-input" class="composer-label">
+          <EditOutlined /> 今天，你想创造什么？
+        </label>
         <a-textarea
           id="idea-input"
           ref="promptInput"
-          v-model:value="drafts.prompt"
+          v-model:value="prompt"
           :maxlength="2000"
           :auto-size="{ minRows: 3, maxRows: 7 }"
-          placeholder="比如，帮我做一个极简风格的个人作品集，展示我的设计作品…"
+          placeholder="帮我创建个人博客网站"
           :bordered="false"
         />
         <div class="composer-bottom">
-          <span class="composer-hint"
-            ><span class="tiny-spark">✳</span> 从一个小小的灵感开始
-            <span class="character-count">{{ drafts.prompt.length }}/2000</span></span
-          ><a-button
+          <span class="composer-hint">
+            <span class="tiny-spark">✳</span> 写清页面、功能和喜欢的风格
+            <span class="character-count">{{ prompt.length }}/2000</span>
+          </span>
+          <a-button
             type="primary"
             html-type="submit"
             size="large"
-            :disabled="drafts.prompt.trim().length < 3"
-            >{{ drafts.editingId ? '更新草稿' : '保存创意' }}
-            <ArrowUpOutlined class="diagonal-arrow"
-          /></a-button>
+            :loading="creating"
+            :disabled="prompt.trim().length < 3"
+          >
+            开始生成 <ArrowUpOutlined class="diagonal-arrow" />
+          </a-button>
         </div>
       </form>
+
       <div class="quick-ideas">
-        <span>试试这些</span
-        ><button v-for="idea in inspirations" :key="idea.id" @click="selectIdea(idea.prompt)">
+        <span>试试这些</span>
+        <button
+          v-for="idea in inspirations"
+          :key="idea.id"
+          type="button"
+          @click="selectIdea(idea.prompt)"
+        >
           <BulbOutlined /> {{ idea.category }} <span>+</span>
         </button>
       </div>
-      <p class="availability-note">创意草稿已开放 · AI 生成与发布即将接入</p>
+      <p class="availability-note">登录后创建 · 实时生成 · 一键部署</p>
+    </section>
+
+    <section v-if="isLoggedIn" class="application-section" aria-labelledby="my-apps-title">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">YOUR WORKSPACE</span>
+          <h2 id="my-apps-title">
+            我的应用 <span class="section-count">{{ myTotal }}</span>
+          </h2>
+        </div>
+        <form class="section-search" @submit.prevent="searchMyApps">
+          <a-input
+            v-model:value="myQuery.appName"
+            allow-clear
+            placeholder="搜索我的应用"
+            @clear="searchMyApps"
+          />
+          <a-button html-type="submit" :loading="myAppsLoading" aria-label="搜索我的应用">
+            <SearchOutlined />
+          </a-button>
+          <button class="text-action" type="button" :disabled="myAppsLoading" @click="loadMyApps">
+            <ReloadOutlined /> 刷新
+          </button>
+        </form>
+      </div>
+
+      <Skeleton v-if="myAppsLoading && !myApps.length" active :paragraph="{ rows: 5 }" />
+      <div v-else-if="myApps.length" class="application-grid">
+        <AppCard v-for="app in myApps" :key="app.id" :app="app" editable />
+      </div>
+      <Empty
+        v-else
+        :image="Empty.PRESENTED_IMAGE_SIMPLE"
+        description="还没有应用，从上方写下第一个想法吧"
+      />
+      <Pagination
+        v-if="myTotal > myQuery.pageSize"
+        class="section-pagination"
+        :current="myQuery.pageNum"
+        :page-size="myQuery.pageSize"
+        :total="myTotal"
+        :show-size-changer="false"
+        @change="changeMyPage"
+      />
+    </section>
+
+    <section class="application-section" aria-labelledby="good-apps-title">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">FEATURED BUILDS</span>
+          <h2 id="good-apps-title">精选应用</h2>
+        </div>
+        <form class="section-search" @submit.prevent="searchGoodApps">
+          <a-input
+            v-model:value="goodQuery.appName"
+            allow-clear
+            placeholder="搜索精选应用"
+            @clear="searchGoodApps"
+          />
+          <a-button html-type="submit" :loading="goodAppsLoading" aria-label="搜索精选应用">
+            <SearchOutlined />
+          </a-button>
+        </form>
+      </div>
+
+      <Skeleton v-if="goodAppsLoading && !goodApps.length" active :paragraph="{ rows: 5 }" />
+      <div v-else-if="goodApps.length" class="application-grid">
+        <AppCard v-for="app in goodApps" :key="app.id" :app="app" />
+      </div>
+      <div v-else class="quiet-empty">
+        <span>✦</span>
+        <p>精选作品正在准备中</p>
+      </div>
+      <Pagination
+        v-if="goodTotal > goodQuery.pageSize"
+        class="section-pagination"
+        :current="goodQuery.pageNum"
+        :page-size="goodQuery.pageSize"
+        :total="goodTotal"
+        :show-size-changer="false"
+        @change="changeGoodPage"
+      />
     </section>
 
     <section class="inspiration-section" aria-labelledby="inspiration-title">
@@ -111,13 +333,154 @@ function saveIdea() {
     <section class="workspace-strip">
       <div class="strip-icon"><FolderOpenOutlined /></div>
       <div>
-        <h2>给灵感留一个位置。</h2>
-        <p>先记下来，下一次打开，接着创造。</p>
+        <h2>先记录，还没准备生成的想法。</h2>
+        <p>草稿保存在当前浏览器，随时可以继续整理。</p>
       </div>
-      <RouterLink to="/drafts"
-        >我的草稿 <span class="draft-count">{{ drafts.drafts.length }}</span>
-        <span>↗</span></RouterLink
-      >
+      <RouterLink to="/drafts">我的草稿 <ArrowRightOutlined /></RouterLink>
     </section>
   </div>
 </template>
+
+<style scoped>
+.home-page {
+  position: relative;
+  isolation: isolate;
+}
+
+.home-page::before {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: -1;
+  width: 100vw;
+  height: 610px;
+  border-bottom: 1px solid #e5e3da99;
+  background:
+    linear-gradient(#77786f0b 1px, transparent 1px),
+    linear-gradient(90deg, #77786f0b 1px, transparent 1px),
+    radial-gradient(circle at 18% 20%, #f0b49d42, transparent 28%),
+    radial-gradient(circle at 82% 12%, #aebda542, transparent 25%),
+    linear-gradient(180deg, #fbfaf6, #f7f6f200);
+  background-size:
+    48px 48px,
+    48px 48px,
+    auto,
+    auto,
+    auto;
+  content: '';
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.application-section {
+  padding: 48px 0 54px;
+  border-top: 1px solid var(--line);
+}
+
+.application-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 30px 22px;
+}
+
+.section-count {
+  margin-left: 8px;
+  color: #a0a194;
+  font-family: Georgia, serif;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 0;
+  color: #73756b;
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+}
+
+.text-action:hover {
+  color: var(--accent);
+}
+
+.section-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.section-search :deep(.ant-input-affix-wrapper) {
+  width: 190px;
+  background: #fbfaf6;
+}
+
+.text-action:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.section-pagination {
+  margin-top: 32px;
+  text-align: center;
+}
+
+.quiet-empty {
+  display: grid;
+  min-height: 190px;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  border: 1px dashed #d8d6ca;
+  border-radius: 12px;
+  color: #a0a196;
+}
+
+.quiet-empty span {
+  color: #b19e72;
+  font-size: 24px;
+}
+
+.quiet-empty p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.inspiration-section {
+  padding-top: 48px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 900px) {
+  .application-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .application-section {
+    padding: 38px 0 44px;
+  }
+
+  .application-grid {
+    grid-template-columns: 1fr;
+    gap: 27px;
+  }
+
+  .application-section .section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .section-search {
+    width: 100%;
+  }
+
+  .section-search :deep(.ant-input-affix-wrapper) {
+    width: auto;
+    flex: 1;
+  }
+}
+</style>

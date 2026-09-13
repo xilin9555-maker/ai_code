@@ -30,7 +30,7 @@ defineEmits<{ select: [] }>()
         </div>
         <div class="mini-bottom">COFFEE & GOOD DAYS <span>EST. 2026</span></div>
       </div>
-      <div v-else class="mini-planner">
+      <div v-else-if="previewStyle === 'planner'" class="mini-planner">
         <div class="mini-nav"><b>daylight ☀</b><span>YOUR LITTLE SPACE</span></div>
         <div class="planner-body">
           <div>
@@ -41,6 +41,14 @@ defineEmits<{ select: [] }>()
           </div>
           <div class="mini-progress"><span>1/3</span><small>慢慢来，也很快</small></div>
         </div>
+      </div>
+      <div v-else class="mini-shop">
+        <div class="mini-nav"><b>NORD GOODS</b><span>NEW &nbsp; SHOP &nbsp; CART</span></div>
+        <div class="shop-copy">
+          <span class="tiny-label">SELECTED FOR DAILY LIFE</span>
+          <strong>简单生活，<br />认真选择。</strong>
+        </div>
+        <div class="shop-products"><span>◒</span><span>▰</span><span>◉</span></div>
       </div>
     </div>
     <div class="inspiration-info">

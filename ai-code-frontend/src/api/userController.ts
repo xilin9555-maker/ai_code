@@ -5,7 +5,7 @@ import request from '@/request'
 /** 此处后端没有提供注释 POST /user/add */
 export async function addUser(
   body: API.UserAddRequest,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseLong>('/user/add', {
     method: 'POST',
@@ -20,7 +20,7 @@ export async function addUser(
 /** 此处后端没有提供注释 POST /user/delete */
 export async function deleteUser(
   body: API.DeleteRequest,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseBoolean>('/user/delete', {
     method: 'POST',
@@ -36,7 +36,7 @@ export async function deleteUser(
 export async function getUserById(
   // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
   params: API.getUserByIdParams,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseUser>('/user/get', {
     method: 'GET',
@@ -59,7 +59,7 @@ export async function getLoginUser(options?: import('axios').AxiosRequestConfig)
 export async function getUserVoById(
   // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
   params: API.getUserVOByIdParams,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseUserVO>('/user/get/vo', {
     method: 'GET',
@@ -73,7 +73,7 @@ export async function getUserVoById(
 /** 此处后端没有提供注释 POST /user/list/page/vo */
 export async function listUserVoByPage(
   body: API.UserQueryRequest,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponsePageUserVO>('/user/list/page/vo', {
     method: 'POST',
@@ -88,7 +88,7 @@ export async function listUserVoByPage(
 /** 此处后端没有提供注释 POST /user/login */
 export async function userLogin(
   body: API.UserLoginRequest,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseLoginUserVO>('/user/login', {
     method: 'POST',
@@ -111,7 +111,7 @@ export async function userLogout(options?: import('axios').AxiosRequestConfig) {
 /** 此处后端没有提供注释 POST /user/register */
 export async function userRegister(
   body: API.UserRegisterRequest,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseLong>('/user/register', {
     method: 'POST',
@@ -126,7 +126,7 @@ export async function userRegister(
 /** 此处后端没有提供注释 POST /user/update */
 export async function updateUser(
   body: API.UserUpdateRequest,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseBoolean>('/user/update', {
     method: 'POST',
@@ -138,10 +138,10 @@ export async function updateUser(
   })
 }
 
-/** 当前登录用户修改自己的公开资料 POST /user/update/my */
+/** 此处后端没有提供注释 POST /user/update/my */
 export async function updateMyUser(
   body: API.UserUpdateMyRequest,
-  options?: import('axios').AxiosRequestConfig,
+  options?: import('axios').AxiosRequestConfig
 ) {
   return request<API.BaseResponseBoolean>('/user/update/my', {
     method: 'POST',

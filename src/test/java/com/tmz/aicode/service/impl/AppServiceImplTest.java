@@ -3,12 +3,16 @@ package com.tmz.aicode.service.impl;
 import cn.hutool.core.io.FileUtil;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
+import com.tmz.aicode.core.builder.VueProjectBuilder;
+import com.tmz.aicode.core.handler.JsonMessageStreamHandler;
+import com.tmz.aicode.core.handler.StreamHandlerExecutor;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.model.dto.app.AppQueryRequest;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.model.vo.UserVO;
+import com.tmz.aicode.service.ChatHistoryService;
 import com.tmz.aicode.service.UserService;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -45,7 +49,9 @@ class AppServiceImplTest {
         UserService userService = mock(UserService.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 userService,
-                mock(AiCodeGeneratorFacade.class)
+                mock(AiCodeGeneratorFacade.class),
+                mock(ChatHistoryService.class),
+                createStreamHandlerExecutor()
         ));
         long appId = 920001L;
         String deployKey = "aB3xY9";
@@ -98,7 +104,9 @@ class AppServiceImplTest {
         UserService userService = mock(UserService.class);
         AppServiceImpl appService = new AppServiceImpl(
                 userService,
-                mock(AiCodeGeneratorFacade.class)
+                mock(AiCodeGeneratorFacade.class),
+                mock(ChatHistoryService.class),
+                createStreamHandlerExecutor()
         );
         User user = User.builder().id(1001L).userName("创建者").build();
         UserVO userVO = new UserVO();
@@ -128,7 +136,9 @@ class AppServiceImplTest {
     void getQueryWrapperRejectsUnknownSortField() {
         AppServiceImpl appService = new AppServiceImpl(
                 mock(UserService.class),
-                mock(AiCodeGeneratorFacade.class)
+                mock(AiCodeGeneratorFacade.class),
+                mock(ChatHistoryService.class),
+                createStreamHandlerExecutor()
         );
         AppQueryRequest request = new AppQueryRequest();
         request.setSortField("unknownColumn");
@@ -149,7 +159,13 @@ class AppServiceImplTest {
     void chatToGenCodeDelegatesAuthorizedAppToFacade() {
         UserService userService = mock(UserService.class);
         AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
-        AppServiceImpl appService = spy(new AppServiceImpl(userService, facade));
+        ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(
+                userService,
+                facade,
+                chatHistoryService,
+                createStreamHandlerExecutor()
+        ));
         long appId = 2001L;
         User loginUser = User.builder().id(1001L).build();
         App app = App.builder()
@@ -163,6 +179,12 @@ class AppServiceImplTest {
                 com.tmz.aicode.model.enums.CodeGenTypeEnum.MULTI_FILE,
                 appId
         )).thenReturn(Flux.just("第一段", "第二段"));
+        when(chatHistoryService.addChatMessage(
+                org.mockito.ArgumentMatchers.eq(appId),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(loginUser.getId())
+        )).thenReturn(true);
 
         List<String> chunks = appService.chatToGenCode(
                         appId,
@@ -178,6 +200,18 @@ class AppServiceImplTest {
                 com.tmz.aicode.model.enums.CodeGenTypeEnum.MULTI_FILE,
                 appId
         );
+        verify(chatHistoryService).addChatMessage(
+                appId,
+                "生成任务管理网站",
+                "user",
+                loginUser.getId()
+        );
+        verify(chatHistoryService).addChatMessage(
+                appId,
+                "第一段第二段",
+                "ai",
+                loginUser.getId()
+        );
     }
 
     /**
@@ -186,7 +220,12 @@ class AppServiceImplTest {
     @Test
     void chatToGenCodeRejectsAnotherUsersApp() {
         AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
-        AppServiceImpl appService = spy(new AppServiceImpl(mock(UserService.class), facade));
+        AppServiceImpl appService = spy(new AppServiceImpl(
+                mock(UserService.class),
+                facade,
+                mock(ChatHistoryService.class),
+                createStreamHandlerExecutor()
+        ));
         long appId = 2002L;
         App app = App.builder()
                 .id(appId)
@@ -206,5 +245,72 @@ class AppServiceImplTest {
 
         assertEquals("只能为自己创建的应用生成代码", exception.getMessage());
         verifyNoInteractions(facade);
+    }
+
+    /**
+     * 模拟生成流失败时，应保留用户输入并追加一条 AI 失败记录。
+     *
+     * 门面直接返回固定异常流，整个测试不会连接真实模型。
+     */
+    @Test
+    void chatToGenCodeSavesFailureMessageWithoutCallingRealModel() {
+        AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
+        ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(
+                mock(UserService.class),
+                facade,
+                chatHistoryService,
+                createStreamHandlerExecutor()
+        ));
+        long appId = 2003L;
+        long userId = 1003L;
+        User loginUser = User.builder().id(userId).build();
+        App app = App.builder()
+                .id(appId)
+                .userId(userId)
+                .codeGenType("multi_file")
+                .build();
+        doReturn(app).when(appService).getById(appId);
+        when(chatHistoryService.addChatMessage(
+                org.mockito.ArgumentMatchers.eq(appId),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(userId)
+        )).thenReturn(true);
+        when(facade.generateAndSaveCodeStream(
+                "生成失败示例",
+                com.tmz.aicode.model.enums.CodeGenTypeEnum.MULTI_FILE,
+                appId
+        )).thenReturn(Flux.error(new IllegalStateException("连接超时")));
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> appService.chatToGenCode(appId, "生成失败示例", loginUser)
+                        .then()
+                        .block()
+        );
+
+        assertEquals("连接超时", exception.getMessage());
+        verify(chatHistoryService).addChatMessage(
+                appId,
+                "生成失败示例",
+                "user",
+                userId
+        );
+        verify(chatHistoryService).addChatMessage(
+                appId,
+                "AI 回复失败：连接超时",
+                "ai",
+                userId
+        );
+    }
+
+    /**
+     * 使用真实的流处理选择逻辑，测试数据仍全部来自本地固定 Flux。
+     */
+    private static StreamHandlerExecutor createStreamHandlerExecutor() {
+        return new StreamHandlerExecutor(
+                new JsonMessageStreamHandler(mock(VueProjectBuilder.class))
+        );
     }
 }

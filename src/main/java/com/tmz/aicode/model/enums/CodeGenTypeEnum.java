@@ -20,7 +20,12 @@ public enum CodeGenTypeEnum {
     /**
      * 分别生成 index.html、style.css 和 script.js 三个文件。
      */
-    MULTI_FILE("原生多文件模式", "multi_file");
+    MULTI_FILE("原生多文件模式", "multi_file"),
+
+    /**
+     * 通过文件工具生成包含依赖、路由、组件和构建配置的完整 Vue 工程。
+     */
+    VUE_PROJECT("Vue 工程模式", "vue_project");
 
     /**
      * 适合直接显示给用户的模式名称。
@@ -40,7 +45,8 @@ public enum CodeGenTypeEnum {
     /**
      * 根据稳定值查找对应的生成方式。
      *
-     * @param value 接口或数据库中的生成方式，例如 {@code html} 或 {@code multi_file}
+     * @param value 接口或数据库中的生成方式，例如 {@code html}、{@code multi_file}
+     *              或 {@code vue_project}
      * @return 匹配的枚举；输入为空或无法识别时返回 {@code null}
      */
     public static CodeGenTypeEnum getEnumByValue(String value) {

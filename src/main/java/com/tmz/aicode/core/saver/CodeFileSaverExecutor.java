@@ -40,6 +40,10 @@ public final class CodeFileSaverExecutor {
         return switch (codeGenType) {
             case HTML -> saveHtmlResult(codeResult, appId);
             case MULTI_FILE -> saveMultiFileResult(codeResult, appId);
+            case VUE_PROJECT -> throw new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "Vue 工程由文件工具直接写入，不需要保存器重复处理"
+            );
         };
     }
 

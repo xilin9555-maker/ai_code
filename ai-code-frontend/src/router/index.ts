@@ -30,6 +30,18 @@ export const routes: AppRouteRecord[] = [
     meta: { title: '我的草稿', inMenu: true, access: ACCESS_ENUM.USER },
   },
   {
+    path: '/app/chat/:id',
+    name: 'app-chat',
+    component: () => import('@/pages/AppChatPage.vue'),
+    meta: { title: '应用工作台', hideInMenu: true },
+  },
+  {
+    path: '/app/edit/:id',
+    name: 'app-edit',
+    component: () => import('@/pages/AppEditPage.vue'),
+    meta: { title: '编辑应用', hideInMenu: true, access: ACCESS_ENUM.USER },
+  },
+  {
     path: '/about',
     name: 'about',
     component: () => import('@/pages/AboutPage.vue'),
@@ -52,6 +64,18 @@ export const routes: AppRouteRecord[] = [
     name: 'user-manage',
     component: () => import('@/pages/UserManagePage.vue'),
     meta: { title: '用户管理', inMenu: true, access: ACCESS_ENUM.ADMIN },
+  },
+  {
+    path: '/admin/app-manage',
+    name: 'app-manage',
+    component: () => import('@/pages/AppManagePage.vue'),
+    meta: { title: '应用管理', inMenu: true, access: ACCESS_ENUM.ADMIN },
+  },
+  {
+    path: '/admin/chatManage',
+    name: 'chat-manage',
+    component: () => import('@/pages/ChatManagePage.vue'),
+    meta: { title: '对话管理', inMenu: true, access: ACCESS_ENUM.ADMIN },
   },
   {
     path: '/user/settings',

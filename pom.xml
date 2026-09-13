@@ -46,6 +46,16 @@
             <artifactId>langchain4j</artifactId>
             <version>1.1.0</version>
         </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-community-redis-spring-boot-starter</artifactId>
+            <version>1.1.0-beta7</version>
+        </dependency>
+        <!-- 缓存按应用创建的 AI Service，减少重复构造对话记忆和代理对象的开销。 -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
         <!-- 将模型的增量响应适配为 Reactor Flux，便于后续通过 SSE 持续推送给前端。 -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
@@ -70,6 +80,14 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!--
+            用 Redis 保存 HttpSession。Spring Boot 会自动注册 Session 过滤器，现有
+            request.getSession() 代码无需改动，登录状态可以在重启后继续恢复。
+        -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
         </dependency>
 
         <dependency>
@@ -99,12 +117,6 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-devtools</artifactId>
-            <scope>runtime</scope>
-            <optional>true</optional>
-        </dependency>
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>

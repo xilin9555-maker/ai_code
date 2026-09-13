@@ -9,11 +9,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.session.SessionRepository;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -23,6 +25,7 @@ import java.util.Map;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -39,8 +42,25 @@ class AiCodeApplicationTests {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private ApplicationContext applicationContext;
+
+    @Autowired
+    private SessionRepository<?> sessionRepository;
+
     @Test
     void contextLoads() {
+    }
+
+    /**
+     * 确认 Spring Session 已经接管 HttpSession，并使用 Redis 类型的仓库存储登录状态。
+     * 这里只检查自动配置结果，不会创建真实登录会话或调用外部模型。
+     */
+    @Test
+    void httpSessionUsesRedisRepository() {
+        assertTrue(applicationContext.containsBean("springSessionRepositoryFilter"));
+        assertTrue(sessionRepository.getClass().getName().contains("Redis"),
+                "HttpSession 应由 Redis SessionRepository 保存");
     }
 
     @Test

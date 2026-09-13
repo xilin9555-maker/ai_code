@@ -3,3 +3,9 @@
 spring:
   config:
     import: optional:file:./application_local.yml
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password:
+      ttl: 3600

@@ -33,6 +33,10 @@ public final class CodeParserExecutor {
         return switch (codeGenType) {
             case HTML -> HTML_CODE_PARSER.parseCode(codeContent);
             case MULTI_FILE -> MULTI_FILE_CODE_PARSER.parseCode(codeContent);
+            case VUE_PROJECT -> throw new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "Vue 工程由文件工具直接写入，不需要文本解析"
+            );
         };
     }
 }

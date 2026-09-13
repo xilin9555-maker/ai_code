@@ -9,6 +9,7 @@ import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
+import com.tmz.aicode.core.handler.StreamHandlerExecutor;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
 import com.tmz.aicode.exception.ThrowUtils;
@@ -16,15 +17,20 @@ import com.tmz.aicode.mapper.AppMapper;
 import com.tmz.aicode.model.dto.app.AppQueryRequest;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
+import com.tmz.aicode.model.enums.ChatHistoryMessageTypeEnum;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.model.vo.UserVO;
 import com.tmz.aicode.service.AppService;
+import com.tmz.aicode.service.ChatHistoryService;
 import com.tmz.aicode.service.UserService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
+import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +42,7 @@ import java.util.stream.Collectors;
  * 应用业务服务实现。
  */
 @Service
+@Slf4j
 public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppService {
 
     /**
@@ -63,9 +70,18 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     private final AiCodeGeneratorFacade aiCodeGeneratorFacade;
 
-    public AppServiceImpl(UserService userService, AiCodeGeneratorFacade aiCodeGeneratorFacade) {
+    private final ChatHistoryService chatHistoryService;
+
+    private final StreamHandlerExecutor streamHandlerExecutor;
+
+    public AppServiceImpl(UserService userService,
+                          AiCodeGeneratorFacade aiCodeGeneratorFacade,
+                          ChatHistoryService chatHistoryService,
+                          StreamHandlerExecutor streamHandlerExecutor) {
         this.userService = userService;
         this.aiCodeGeneratorFacade = aiCodeGeneratorFacade;
+        this.chatHistoryService = chatHistoryService;
+        this.streamHandlerExecutor = streamHandlerExecutor;
     }
 
     /**
@@ -170,11 +186,68 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         if (codeGenType == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "应用的代码生成类型不受支持");
         }
-        return aiCodeGeneratorFacade.generateAndSaveCodeStream(
+        // 模型调用前先保存用户输入。即使随后连接模型失败，本轮对话的起点仍然可以追溯。
+        boolean userMessageSaved = chatHistoryService.addChatMessage(
+                appId,
                 normalizedMessage,
-                codeGenType,
-                appId
+                ChatHistoryMessageTypeEnum.USER.getValue(),
+                loginUser.getId()
         );
+        ThrowUtils.throwIf(!userMessageSaved,
+                ErrorCode.OPERATION_ERROR, "用户消息保存失败");
+
+        /*
+         * defer 把模型调用推迟到订阅阶段。这样模型方法同步抛出的连接异常也会进入响应流，
+         * 既能被下面的错误处理记录，又能继续由 SSE 链路通知前端。
+         */
+        return Flux.defer(() -> {
+            Flux<String> originFlux = aiCodeGeneratorFacade.generateAndSaveCodeStream(
+                    normalizedMessage,
+                    codeGenType,
+                    appId
+            );
+            /*
+             * 普通模式直接收集文本，Vue 模式先解析门面产生的 JSON 事件。两类处理器最终
+             * 都返回前端可展示的文本，并负责把整理后的完整 AI 回复保存到对话历史。
+             */
+            return streamHandlerExecutor.doExecute(
+                    originFlux,
+                    chatHistoryService,
+                    appId,
+                    loginUser,
+                    codeGenType
+            );
+        });
+    }
+
+    /**
+     * 删除应用时一并清理它的对话历史。
+     *
+     * 两次删除放在同一个事务内：任何一步抛出异常都会整体回滚，避免留下没有所属应用的
+     * 历史消息，也避免应用仍存在但历史已经被提前清空。
+     *
+     * @param id 需要删除的应用 id
+     * @return 应用删除成功时返回 true
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean removeById(Serializable id) {
+        if (id == null) {
+            return false;
+        }
+        long appId;
+        try {
+            appId = Long.parseLong(id.toString());
+        } catch (NumberFormatException e) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用 id 格式错误");
+        }
+        ThrowUtils.throwIf(appId <= 0, ErrorCode.PARAMS_ERROR, "应用 id 不能为空");
+
+        // 没有历史记录时 deleteByAppId 会返回 false，这不影响继续删除应用本身。
+        chatHistoryService.deleteByAppId(appId);
+        boolean removed = super.removeById(id);
+        ThrowUtils.throwIf(!removed, ErrorCode.OPERATION_ERROR, "应用删除失败");
+        return true;
     }
 
     /**
