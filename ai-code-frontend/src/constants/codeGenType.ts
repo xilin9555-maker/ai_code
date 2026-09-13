@@ -2,6 +2,7 @@
 export enum CodeGenTypeEnum {
   HTML = 'html',
   MULTI_FILE = 'multi_file',
+  VUE_PROJECT = 'vue_project',
 }
 
 /** 每种生成类型的界面名称，列表、详情和筛选框可以共用同一份配置。 */
@@ -13,6 +14,10 @@ export const CODE_GEN_TYPE_CONFIG = {
   [CodeGenTypeEnum.MULTI_FILE]: {
     label: 'HTML 多文件',
     value: CodeGenTypeEnum.MULTI_FILE,
+  },
+  [CodeGenTypeEnum.VUE_PROJECT]: {
+    label: 'Vue 工程',
+    value: CodeGenTypeEnum.VUE_PROJECT,
   },
 } as const
 

@@ -113,7 +113,7 @@ public class JsonMessageStreamHandler {
      * 根据 type 字段处理一个内部 JSON 消息。
      *
      * AI 文本会直接进入前端和历史记录；工具请求负责持续输出正在生成的文件内容；
-     * 工具完成消息负责补齐剩余内容并关闭代码块。
+     * 工具完成消息负责补齐前端内容，同时向历史记录写入结构完整的代码块。
      */
     private String handleJsonMessageChunk(String chunk,
                                           StringBuilder chatHistoryBuilder,
@@ -175,7 +175,7 @@ public class JsonMessageStreamHandler {
         }
         ToolStreamState state = toolStates.computeIfAbsent(toolKey, ignored -> new ToolStreamState());
         state.arguments.append(message.getArguments());
-        appendNewToolContent(state, chatHistoryBuilder, output);
+        appendNewToolContent(state, output);
         return output.toString();
     }
 
@@ -205,23 +205,29 @@ public class JsonMessageStreamHandler {
         }
 
         StringBuilder output = new StringBuilder();
-        openCodeBlockIfNecessary(state, relativeFilePath, chatHistoryBuilder, output);
+        openCodeBlockIfNecessary(state, relativeFilePath, output);
         int emittedLength = Math.min(state.emittedContentLength, content.length());
         if (content.length() > emittedLength) {
-            appendToOutputAndHistory(
-                    content.substring(emittedLength), chatHistoryBuilder, output
-            );
+            output.append(content.substring(emittedLength));
         }
-        appendToOutputAndHistory("\n```\n\n", chatHistoryBuilder, output);
+        output.append("\n```\n\n");
+
+        // 历史记录使用工具完成事件中的完整参数重新组装，避免并行参数流造成围栏交错。
+        String language = StrUtil.blankToDefault(FileUtil.getSuffix(relativeFilePath), "text");
+        chatHistoryBuilder.append("\n\n[工具调用] 写入文件 ")
+                .append(relativeFilePath)
+                .append("\n```")
+                .append(language)
+                .append('\n')
+                .append(content)
+                .append("\n```\n\n");
         return output.toString();
     }
 
     /**
      * 从当前累计参数中提取路径与文件内容，只输出相对于上一次新增的代码。
      */
-    private void appendNewToolContent(ToolStreamState state,
-                                      StringBuilder chatHistoryBuilder,
-                                      StringBuilder output) {
+    private void appendNewToolContent(ToolStreamState state, StringBuilder output) {
         String accumulatedArguments = state.arguments.toString();
         JsonStringPrefix pathPrefix = decodeJsonStringPrefix(
                 accumulatedArguments, "relativeFilePath"
@@ -231,14 +237,14 @@ public class JsonMessageStreamHandler {
             return;
         }
 
-        openCodeBlockIfNecessary(state, pathPrefix.value(), chatHistoryBuilder, output);
+        openCodeBlockIfNecessary(state, pathPrefix.value(), output);
         String decodedContent = contentPrefix.value();
         if (decodedContent.length() <= state.emittedContentLength) {
             return;
         }
         String delta = decodedContent.substring(state.emittedContentLength);
         state.emittedContentLength = decodedContent.length();
-        appendToOutputAndHistory(delta, chatHistoryBuilder, output);
+        output.append(delta);
     }
 
     /**
@@ -246,7 +252,6 @@ public class JsonMessageStreamHandler {
      */
     private void openCodeBlockIfNecessary(ToolStreamState state,
                                           String relativeFilePath,
-                                          StringBuilder chatHistoryBuilder,
                                           StringBuilder output) {
         if (state.codeBlockOpened) {
             return;
@@ -255,17 +260,7 @@ public class JsonMessageStreamHandler {
         String header = "\n\n[工具调用] 写入文件 " + relativeFilePath
                 + "\n```" + language + "\n";
         state.codeBlockOpened = true;
-        appendToOutputAndHistory(header, chatHistoryBuilder, output);
-    }
-
-    /**
-     * 同一份内容同时送往前端和历史记录缓冲区，保证实时结果与刷新后的结果一致。
-     */
-    private void appendToOutputAndHistory(String value,
-                                          StringBuilder chatHistoryBuilder,
-                                          StringBuilder output) {
-        output.append(value);
-        chatHistoryBuilder.append(value);
+        output.append(header);
     }
 
     /**

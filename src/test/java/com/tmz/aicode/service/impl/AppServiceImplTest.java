@@ -22,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyCollection;
@@ -47,11 +48,13 @@ class AppServiceImplTest {
     @Test
     void deployAppCopiesFilesAndKeepsExistingUrl() {
         UserService userService = mock(UserService.class);
+        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 userService,
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
-                createStreamHandlerExecutor()
+                createStreamHandlerExecutor(),
+                vueProjectBuilder
         ));
         long appId = 920001L;
         String deployKey = "aB3xY9";
@@ -90,6 +93,71 @@ class AppServiceImplTest {
                     "<h1>部署测试</h1>",
                     FileUtil.readString(new File(deployDir, "index.html"), StandardCharsets.UTF_8)
             );
+            verifyNoInteractions(vueProjectBuilder);
+        } finally {
+            FileUtil.del(sourceDir);
+            FileUtil.del(deployDir);
+        }
+    }
+
+    /**
+     * Vue 工程必须先完成构建，并且只把 dist 中的浏览器成品复制到部署目录。
+     *
+     * 构建器在测试中由固定结果代替，因此不会执行 npm，也不会访问网络。
+     */
+    @Test
+    void deployVueProjectBuildsAndCopiesDistDirectory() {
+        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(
+                mock(UserService.class),
+                mock(AiCodeGeneratorFacade.class),
+                mock(ChatHistoryService.class),
+                createStreamHandlerExecutor(),
+                vueProjectBuilder
+        ));
+        long appId = 920002L;
+        String deployKey = "vUe123";
+        User loginUser = User.builder().id(1002L).build();
+        App app = App.builder()
+                .id(appId)
+                .userId(loginUser.getId())
+                .codeGenType("vue_project")
+                .deployKey(deployKey)
+                .build();
+        File sourceDir = new File(AppConstant.CODE_OUTPUT_ROOT_DIR, "vue_project_" + appId);
+        File distDir = new File(sourceDir, "dist");
+        File deployDir = new File(AppConstant.CODE_DEPLOY_ROOT_DIR, deployKey);
+
+        try {
+            FileUtil.mkdir(distDir);
+            FileUtil.writeString(
+                    "<h1>Vue 构建成品</h1>",
+                    new File(distDir, "index.html"),
+                    StandardCharsets.UTF_8
+            );
+            FileUtil.writeString(
+                    "{\"name\":\"source-only\"}",
+                    new File(sourceDir, "package.json"),
+                    StandardCharsets.UTF_8
+            );
+            when(vueProjectBuilder.buildProject(sourceDir.getAbsolutePath())).thenReturn(true);
+            doReturn(app).when(appService).getById(appId);
+            doReturn(true).when(appService).updateById(argThat(update ->
+                    update != null
+                            && Long.valueOf(appId).equals(update.getId())
+                            && deployKey.equals(update.getDeployKey())
+                            && update.getDeployedTime() != null
+            ));
+
+            String deployUrl = appService.deployApp(appId, loginUser);
+
+            assertEquals("http://localhost/" + deployKey + "/", deployUrl);
+            verify(vueProjectBuilder).buildProject(sourceDir.getAbsolutePath());
+            assertEquals(
+                    "<h1>Vue 构建成品</h1>",
+                    FileUtil.readString(new File(deployDir, "index.html"), StandardCharsets.UTF_8)
+            );
+            assertFalse(new File(deployDir, "package.json").exists());
         } finally {
             FileUtil.del(sourceDir);
             FileUtil.del(deployDir);
@@ -106,7 +174,8 @@ class AppServiceImplTest {
                 userService,
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
-                createStreamHandlerExecutor()
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class)
         );
         User user = User.builder().id(1001L).userName("创建者").build();
         UserVO userVO = new UserVO();
@@ -138,7 +207,8 @@ class AppServiceImplTest {
                 mock(UserService.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
-                createStreamHandlerExecutor()
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class)
         );
         AppQueryRequest request = new AppQueryRequest();
         request.setSortField("unknownColumn");
@@ -164,7 +234,8 @@ class AppServiceImplTest {
                 userService,
                 facade,
                 chatHistoryService,
-                createStreamHandlerExecutor()
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class)
         ));
         long appId = 2001L;
         User loginUser = User.builder().id(1001L).build();
@@ -224,7 +295,8 @@ class AppServiceImplTest {
                 mock(UserService.class),
                 facade,
                 mock(ChatHistoryService.class),
-                createStreamHandlerExecutor()
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class)
         ));
         long appId = 2002L;
         App app = App.builder()
@@ -260,7 +332,8 @@ class AppServiceImplTest {
                 mock(UserService.class),
                 facade,
                 chatHistoryService,
-                createStreamHandlerExecutor()
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class)
         ));
         long appId = 2003L;
         long userId = 1003L;

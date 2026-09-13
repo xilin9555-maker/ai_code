@@ -9,6 +9,7 @@ import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
+import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.core.handler.StreamHandlerExecutor;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
@@ -74,14 +75,18 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     private final StreamHandlerExecutor streamHandlerExecutor;
 
+    private final VueProjectBuilder vueProjectBuilder;
+
     public AppServiceImpl(UserService userService,
                           AiCodeGeneratorFacade aiCodeGeneratorFacade,
                           ChatHistoryService chatHistoryService,
-                          StreamHandlerExecutor streamHandlerExecutor) {
+                          StreamHandlerExecutor streamHandlerExecutor,
+                          VueProjectBuilder vueProjectBuilder) {
         this.userService = userService;
         this.aiCodeGeneratorFacade = aiCodeGeneratorFacade;
         this.chatHistoryService = chatHistoryService;
         this.streamHandlerExecutor = streamHandlerExecutor;
+        this.vueProjectBuilder = vueProjectBuilder;
     }
 
     /**
@@ -110,6 +115,20 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         File sourceDir = new File(AppConstant.CODE_OUTPUT_ROOT_DIR, sourceDirName);
         ThrowUtils.throwIf(!sourceDir.isDirectory(),
                 ErrorCode.OPERATION_ERROR, "应用代码不存在，请先生成代码");
+
+        if (codeGenType == CodeGenTypeEnum.VUE_PROJECT) {
+            // Vue 源码不能直接交给浏览器运行，部署前必须同步生成静态构建产物。
+            boolean buildSuccess = vueProjectBuilder.buildProject(sourceDir.getAbsolutePath());
+            ThrowUtils.throwIf(!buildSuccess,
+                    ErrorCode.SYSTEM_ERROR, "Vue 项目构建失败，请检查代码和依赖");
+
+            File distDir = new File(sourceDir, "dist");
+            ThrowUtils.throwIf(!distDir.isDirectory(),
+                    ErrorCode.SYSTEM_ERROR, "Vue 项目构建完成但未生成 dist 目录");
+            // 只发布 dist，避免把源码、node_modules 和 package.json 暴露到静态网站目录。
+            sourceDir = distDir;
+            log.info("Vue 项目构建成功，准备部署静态文件目录：{}", distDir.getAbsolutePath());
+        }
 
         String deployKey = app.getDeployKey();
         if (StrUtil.isBlank(deployKey)) {

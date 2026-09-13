@@ -1,3 +1,5 @@
+import { CodeGenTypeEnum } from '@/constants/codeGenType'
+
 /** 去掉末尾斜杠，避免后续拼接路径时出现重复的 //。 */
 function removeTrailingSlash(value: string) {
   return value.replace(/\/+$/, '')
@@ -22,13 +24,22 @@ export function getApiBaseUrl() {
   return new URL(`${API_BASE_URL}/`, window.location.origin)
 }
 
-/** 根据应用生成方式和 ID 构造实时预览地址，并附加缓存刷新参数。 */
+/**
+ * 根据应用生成方式和 ID 构造实时预览地址，并附加缓存刷新参数。
+ *
+ * HTML 模式生成的 index.html 就在应用目录根部，可以直接访问目录地址。Vue 工程需要先
+ * 由 Vite 编译，浏览器真正能运行的是 dist/index.html，因此要把构建目录加入预览路径。
+ */
 export function getStaticPreviewUrl(codeGenType?: string, appId?: string, cacheKey = Date.now()) {
   if (!codeGenType || !appId) return ''
 
   const staticBaseUrl = new URL(`${STATIC_BASE_URL}/`, window.location.origin)
   const directoryName = `${encodeURIComponent(codeGenType)}_${encodeURIComponent(appId)}`
-  const previewUrl = new URL(`${directoryName}/`, staticBaseUrl)
+  const resourcePath =
+    codeGenType === CodeGenTypeEnum.VUE_PROJECT
+      ? `${directoryName}/dist/index.html`
+      : `${directoryName}/`
+  const previewUrl = new URL(resourcePath, staticBaseUrl)
   previewUrl.searchParams.set('t', String(cacheKey))
   return previewUrl.toString()
 }

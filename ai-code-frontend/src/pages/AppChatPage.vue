@@ -177,6 +177,29 @@ async function loadMoreHistory() {
   if (hasMoreHistory.value) await loadChatHistory(true)
 }
 
+/**
+ * 读取本轮刚保存的完整 AI 回复。
+ *
+ * 生成过程中直接展示工具参数增量，保证代码可以持续出现。多个工具并行时，这些临时
+ * 片段可能交错；流结束后再采用服务端根据完整工具参数整理的消息，确保 Markdown 中
+ * 每个文件都有独立且闭合的代码块。
+ */
+async function loadLatestAssistantContent() {
+  try {
+    const response = await listAppChatHistory({
+      appId: toApiId(appId.value),
+      pageSize: 5,
+    })
+    const latestAssistant = response.data.data?.records?.find(
+      (record) => record.messageType === 'ai',
+    )
+    return latestAssistant?.message
+  } catch {
+    // 临时刷新失败时保留已经收到的流式内容，不能影响本轮生成正常结束。
+    return undefined
+  }
+}
+
 /** 等待 DOM 更新后把消息区滚动到末尾，持续生成时始终展示最新代码。 */
 async function scrollMessagesToBottom() {
   await nextTick()
@@ -271,13 +294,20 @@ async function generateCode(text = userMessage.value) {
     }
   }
 
-  eventSource.addEventListener('done', () => {
+  eventSource.addEventListener('done', async () => {
     // done 事件可能比定时刷新先到，结束前必须把缓存中的最后几个片段写入页面。
     flushPendingChunks()
-    const assistantMessage = messages.value[assistantMessageIndex]
-    if (assistantMessage) assistantMessage.streaming = false
     completed = true
     closeStream()
+
+    // 用服务端保存的完整消息替换并行工具产生的临时片段，再交给 Markdown 渲染。
+    const completedContent = await loadLatestAssistantContent()
+    if (completedContent) renderedContent = completedContent
+    const assistantMessage = messages.value[assistantMessageIndex]
+    if (assistantMessage) {
+      assistantMessage.content = renderedContent
+      assistantMessage.streaming = false
+    }
     generating.value = false
     if (responseContainsWebsite()) {
       previewReady.value = true
