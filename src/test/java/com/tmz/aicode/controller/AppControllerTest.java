@@ -1,9 +1,13 @@
 package com.tmz.aicode.controller;
 
+import cn.hutool.core.io.FileUtil;
 import cn.hutool.json.JSONUtil;
+import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.exception.BusinessException;
+import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.service.AppService;
+import com.tmz.aicode.service.ProjectDownloadService;
 import com.tmz.aicode.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -18,6 +22,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import reactor.core.publisher.Flux;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -73,7 +78,11 @@ class AppControllerTest {
     void chatToGenCodeWrapsChunksAndAppendsDoneEvent() {
         AppService appService = mock(AppService.class);
         UserService userService = mock(UserService.class);
-        AppController controller = new AppController(appService, userService);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
         MockHttpServletRequest request = new MockHttpServletRequest();
         MockHttpServletResponse response = new MockHttpServletResponse();
         User loginUser = User.builder().id(1001L).build();
@@ -110,7 +119,11 @@ class AppControllerTest {
     void chatToGenCodeWritesBrowserCompatibleSseFrames() throws Exception {
         AppService appService = mock(AppService.class);
         UserService userService = mock(UserService.class);
-        AppController controller = new AppController(appService, userService);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
         User loginUser = User.builder().id(1001L).build();
         when(userService.getLoginUser(org.mockito.ArgumentMatchers.any(HttpServletRequest.class)))
                 .thenReturn(loginUser);
@@ -147,7 +160,11 @@ class AppControllerTest {
     void chatToGenCodeDoesNotSendDoneAfterUpstreamError() {
         AppService appService = mock(AppService.class);
         UserService userService = mock(UserService.class);
-        AppController controller = new AppController(appService, userService);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
         MockHttpServletRequest request = new MockHttpServletRequest();
         MockHttpServletResponse response = new MockHttpServletResponse();
         User loginUser = User.builder().id(1001L).build();
@@ -180,7 +197,11 @@ class AppControllerTest {
     void chatToGenCodeRejectsBlankMessageEarly() {
         AppService appService = mock(AppService.class);
         UserService userService = mock(UserService.class);
-        AppController controller = new AppController(appService, userService);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
 
         BusinessException exception = assertThrows(
                 BusinessException.class,
@@ -194,5 +215,73 @@ class AppControllerTest {
 
         assertEquals("用户消息不能为空", exception.getMessage());
         verifyNoInteractions(userService, appService);
+    }
+
+    /**
+     * 创建者下载应用时，控制器应定位原始代码目录并把 ZIP 响应交给下载服务。
+     */
+    @Test
+    void downloadAppCodeUsesOriginalGeneratedDirectory() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        ProjectDownloadService downloadService = mock(ProjectDownloadService.class);
+        AppController controller = new AppController(appService, userService, downloadService);
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        long appId = 930001L;
+        long userId = 1001L;
+        App app = App.builder()
+                .id(appId)
+                .userId(userId)
+                .codeGenType("multi_file")
+                .build();
+        File sourceDir = new File(AppConstant.CODE_OUTPUT_ROOT_DIR, "multi_file_" + appId);
+
+        try {
+            FileUtil.mkdir(sourceDir);
+            when(appService.getById(appId)).thenReturn(app);
+            when(userService.getLoginUser(request)).thenReturn(User.builder().id(userId).build());
+
+            controller.downloadAppCode(appId, request, response);
+
+            verify(downloadService).downloadProjectAsZip(
+                    sourceDir.getAbsolutePath(),
+                    String.valueOf(appId),
+                    response
+            );
+        } finally {
+            FileUtil.del(sourceDir);
+        }
+    }
+
+    /**
+     * 非创建者不能下载代码，并且权限失败后不应继续访问文件压缩服务。
+     */
+    @Test
+    void downloadAppCodeRejectsAnotherUser() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        ProjectDownloadService downloadService = mock(ProjectDownloadService.class);
+        AppController controller = new AppController(appService, userService, downloadService);
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        long appId = 930002L;
+        when(appService.getById(appId)).thenReturn(App.builder()
+                .id(appId)
+                .userId(1001L)
+                .codeGenType("multi_file")
+                .build());
+        when(userService.getLoginUser(request)).thenReturn(User.builder().id(1002L).build());
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> controller.downloadAppCode(
+                        appId,
+                        request,
+                        new MockHttpServletResponse()
+                )
+        );
+
+        assertEquals("无权限下载该应用代码", exception.getMessage());
+        verifyNoInteractions(downloadService);
     }
 }

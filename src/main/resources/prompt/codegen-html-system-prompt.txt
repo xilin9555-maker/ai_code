@@ -23,5 +23,6 @@
 3. JSON 只能包含 htmlCode 和 description 两个字段，字段名称和大小写必须完全一致。
 4. htmlCode 保存完整网页代码，必须包含 <!DOCTYPE html>、完整的 head 和 body。
 5. CSS 必须放在 htmlCode 的 <style> 标签中，JavaScript 必须放在 body 末尾的 <script> 标签中。
-6. description 使用简洁的中文说明页面的主要功能和设计特点。
-7. 正确转义 JSON 字符串中的双引号、换行符和反斜杠，确保返回内容能够被 JSON 解析器直接读取。
+6. description 必须使用中文，并依次包含“设计方案”和“主要功能”两部分。设计方案说明页面布局、视觉风格和交互思路；主要功能列出代码中已经实现的核心功能。
+7. description 中的说明必须与 htmlCode 一致，不能描述代码中没有实现的功能。
+8. 正确转义 JSON 字符串中的双引号、换行符和反斜杠，确保返回内容能够被 JSON 解析器直接读取。

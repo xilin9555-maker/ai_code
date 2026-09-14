@@ -7,6 +7,7 @@ import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
+import com.tmz.aicode.ai.AiCodeGenTypeRoutingService;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
 import com.tmz.aicode.core.builder.VueProjectBuilder;
@@ -15,6 +16,7 @@ import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
 import com.tmz.aicode.exception.ThrowUtils;
 import com.tmz.aicode.mapper.AppMapper;
+import com.tmz.aicode.model.dto.app.AppAddRequest;
 import com.tmz.aicode.model.dto.app.AppQueryRequest;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
@@ -22,6 +24,7 @@ import com.tmz.aicode.model.enums.ChatHistoryMessageTypeEnum;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.model.vo.UserVO;
+import com.tmz.aicode.mq.ScreenshotTaskProducer;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.ChatHistoryService;
 import com.tmz.aicode.service.UserService;
@@ -69,6 +72,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     private final UserService userService;
 
+    private final AiCodeGenTypeRoutingService aiCodeGenTypeRoutingService;
+
     private final AiCodeGeneratorFacade aiCodeGeneratorFacade;
 
     private final ChatHistoryService chatHistoryService;
@@ -77,16 +82,57 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     private final VueProjectBuilder vueProjectBuilder;
 
+    private final ScreenshotTaskProducer screenshotTaskProducer;
+
     public AppServiceImpl(UserService userService,
+                          AiCodeGenTypeRoutingService aiCodeGenTypeRoutingService,
                           AiCodeGeneratorFacade aiCodeGeneratorFacade,
                           ChatHistoryService chatHistoryService,
                           StreamHandlerExecutor streamHandlerExecutor,
-                          VueProjectBuilder vueProjectBuilder) {
+                          VueProjectBuilder vueProjectBuilder,
+                          ScreenshotTaskProducer screenshotTaskProducer) {
         this.userService = userService;
+        this.aiCodeGenTypeRoutingService = aiCodeGenTypeRoutingService;
         this.aiCodeGeneratorFacade = aiCodeGeneratorFacade;
         this.chatHistoryService = chatHistoryService;
         this.streamHandlerExecutor = streamHandlerExecutor;
         this.vueProjectBuilder = vueProjectBuilder;
+        this.screenshotTaskProducer = screenshotTaskProducer;
+    }
+
+    /**
+     * 创建应用，并在写入数据库前让 AI 根据需求复杂度选择生成方案。
+     *
+     * 用户只负责描述想要的网站。服务端统一绑定创建者、生成临时名称、设置默认优先级，
+     * 再把完整需求交给路由服务。选择结果会随应用一起保存，后续生成、预览、部署和下载
+     * 都以数据库中的类型为准，不需要在每一轮对话中重复判断。
+     */
+    @Override
+    public Long createApp(AppAddRequest appAddRequest, User loginUser) {
+        ThrowUtils.throwIf(appAddRequest == null,
+                ErrorCode.PARAMS_ERROR, "创建应用参数不能为空");
+        String initPrompt = StrUtil.trim(appAddRequest.getInitPrompt());
+        ThrowUtils.throwIf(StrUtil.isBlank(initPrompt),
+                ErrorCode.PARAMS_ERROR, "初始化需求不能为空");
+        ThrowUtils.throwIf(loginUser == null || loginUser.getId() == null,
+                ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
+
+        CodeGenTypeEnum selectedCodeGenType =
+                aiCodeGenTypeRoutingService.routeCodeGenType(initPrompt);
+        ThrowUtils.throwIf(selectedCodeGenType == null,
+                ErrorCode.SYSTEM_ERROR, "未能确定代码生成类型");
+
+        App app = new App();
+        app.setInitPrompt(initPrompt);
+        app.setUserId(loginUser.getId());
+        app.setAppName(initPrompt.substring(0, Math.min(initPrompt.length(), 12)));
+        app.setCodeGenType(selectedCodeGenType.getValue());
+        app.setPriority(AppConstant.DEFAULT_APP_PRIORITY);
+
+        boolean saved = this.save(app);
+        ThrowUtils.throwIf(!saved, ErrorCode.OPERATION_ERROR, "应用创建失败");
+        log.info("应用创建成功，id：{}，代码生成类型：{}", app.getId(), selectedCodeGenType.getValue());
+        return app.getId();
     }
 
     /**
@@ -151,7 +197,30 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         ThrowUtils.throwIf(!updated,
                 ErrorCode.OPERATION_ERROR, "应用部署信息更新失败");
 
-        return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        String appDeployUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        // 截图任务进入 RabbitMQ 后由消费者处理，部署请求不需要等待浏览器和 COS 上传。
+        generateAppScreenshotAsync(appId, appDeployUrl);
+        return appDeployUrl;
+    }
+
+    /**
+     * 把应用封面生成任务提交到 RabbitMQ。
+     *
+     * 部署线程只发送包含应用 id 和访问地址的小消息。真正的浏览器截图、COS 上传和封面
+     * 更新由单并发消费者按队列顺序完成，因此共享 WebDriver 不会同时切换多个页面。
+     * RabbitMQ 暂时不可用时记录完整异常，但不撤销已经成功复制的部署文件。
+     *
+     * @param appId  已完成部署的应用 id
+     * @param appUrl 可以由截图浏览器访问的应用地址
+     */
+    @Override
+    public void generateAppScreenshotAsync(Long appId, String appUrl) {
+        try {
+            screenshotTaskProducer.sendScreenshotTask(appId, appUrl);
+        } catch (Exception e) {
+            // 应用静态文件已经部署成功，截图消息发送失败只影响封面，不能把部署结果回滚掉。
+            log.error("应用截图任务发送失败，应用 id：{}，应用地址：{}", appId, appUrl, e);
+        }
     }
 
     /**

@@ -46,6 +46,12 @@
             <artifactId>langchain4j</artifactId>
             <version>1.1.0</version>
         </dependency>
+        <!-- 调用腾讯云 COS SDK 上传应用截图，并获取对象上传结果。 -->
+        <dependency>
+            <groupId>com.qcloud</groupId>
+            <artifactId>cos_api</artifactId>
+            <version>5.6.227</version>
+        </dependency>
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-community-redis-spring-boot-starter</artifactId>
@@ -82,6 +88,14 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
         <!--
+            RabbitMQ 用来承接部署后的截图任务。部署请求只发送一条轻量消息，
+            截图消费者再按顺序完成浏览器截图、COS 上传和应用封面更新。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+        <!--
             用 Redis 保存 HttpSession。Spring Boot 会自动注册 Session 过滤器，现有
             request.getSession() 代码无需改动，登录状态可以在重启后继续恢复。
         -->
@@ -94,6 +108,18 @@
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-all</artifactId>
             <version>${hutool.version}</version>
+        </dependency>
+        <!-- 启动无界面 Chrome 并截取网页当前视口。 -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-java</artifactId>
+            <version>4.33.0</version>
+        </dependency>
+        <!-- 根据本机 Chrome 版本准备匹配的 ChromeDriver，避免手动维护驱动路径。 -->
+        <dependency>
+            <groupId>io.github.bonigarcia</groupId>
+            <artifactId>webdrivermanager</artifactId>
+            <version>6.1.0</version>
         </dependency>
         <dependency>
             <groupId>com.github.xiaoymin</groupId>

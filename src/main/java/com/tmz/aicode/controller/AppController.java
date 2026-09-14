@@ -22,6 +22,7 @@ import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.service.AppService;
+import com.tmz.aicode.service.ProjectDownloadService;
 import com.tmz.aicode.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -29,6 +30,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -37,6 +39,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -72,16 +75,21 @@ public class AppController {
 
     private final UserService userService;
 
-    public AppController(AppService appService, UserService userService) {
+    private final ProjectDownloadService projectDownloadService;
+
+    public AppController(AppService appService,
+                         UserService userService,
+                         ProjectDownloadService projectDownloadService) {
         this.appService = appService;
         this.userService = userService;
+        this.projectDownloadService = projectDownloadService;
     }
 
     /**
      * 创建应用。
      *
-     * 当前用户只需提交初始化需求。服务端会绑定创建人，从需求前 12 个字符生成临时名称，
-     * 并设置默认的多文件生成方式，为后面的 AI 生成流程准备应用记录。
+     * Controller 只负责确认请求对象和当前登录用户，需求校验、类型选择及数据库写入由
+     * AppService 统一完成，避免接口层承载不断增长的业务规则。
      *
      * @param appAddRequest 创建应用时填写的初始化需求
      * @param request 当前请求，用于读取已经登录的用户
@@ -91,21 +99,8 @@ public class AppController {
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest,
                                      HttpServletRequest request) {
         ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
-        String initPrompt = StrUtil.trim(appAddRequest.getInitPrompt());
-        ThrowUtils.throwIf(StrUtil.isBlank(initPrompt),
-                ErrorCode.PARAMS_ERROR, "初始化需求不能为空");
-
         User loginUser = userService.getLoginUser(request);
-        App app = new App();
-        app.setInitPrompt(initPrompt);
-        app.setUserId(loginUser.getId());
-        app.setAppName(initPrompt.substring(0, Math.min(initPrompt.length(), 12)));
-        app.setCodeGenType(CodeGenTypeEnum.VUE_PROJECT.getValue());
-        app.setPriority(AppConstant.DEFAULT_APP_PRIORITY);
-
-        boolean saved = appService.save(app);
-        ThrowUtils.throwIf(!saved, ErrorCode.OPERATION_ERROR, "应用创建失败");
-        return ResultUtils.success(app.getId());
+        return ResultUtils.success(appService.createApp(appAddRequest, loginUser));
     }
 
     /**
@@ -291,6 +286,46 @@ public class AppController {
         User loginUser = userService.getLoginUser(request);
         String deployUrl = appService.deployApp(appId, loginUser);
         return ResultUtils.success(deployUrl);
+    }
+
+    /**
+     * 下载当前用户创建的应用源代码。
+     *
+     * 下载的是代码生成工作目录，而不是部署目录。对于 Vue 工程，压缩包会保留可继续修改的
+     * 源码和 package.json，并过滤 node_modules、dist 等可以重新生成的内容。当前登录用户
+     * 必须是应用创建者，避免通过猜测应用 id 下载其他用户的代码。
+     *
+     * @param appId   需要下载的应用 id
+     * @param request 当前 HTTP 请求，用于读取 Session 中的登录用户
+     * @param response ZIP 文件会直接写入这个响应
+     */
+    @GetMapping("/download/{appId}")
+    public void downloadAppCode(@PathVariable Long appId,
+                                HttpServletRequest request,
+                                HttpServletResponse response) {
+        ThrowUtils.throwIf(appId == null || appId <= 0,
+                ErrorCode.PARAMS_ERROR, "应用 id 无效");
+
+        App app = getExistingApp(appId);
+        User loginUser = userService.getLoginUser(request);
+        ThrowUtils.throwIf(!Objects.equals(app.getUserId(), loginUser.getId()),
+                ErrorCode.NO_AUTH_ERROR, "无权限下载该应用代码");
+
+        // 使用数据库中受控的生成类型构造目录，拒绝异常类型进入服务器文件路径。
+        CodeGenTypeEnum codeGenType = CodeGenTypeEnum.getEnumByValue(app.getCodeGenType());
+        ThrowUtils.throwIf(codeGenType == null,
+                ErrorCode.SYSTEM_ERROR, "应用的代码生成类型不受支持");
+        String sourceDirName = codeGenType.getValue() + "_" + appId;
+        File sourceDir = new File(AppConstant.CODE_OUTPUT_ROOT_DIR, sourceDirName);
+        ThrowUtils.throwIf(!sourceDir.isDirectory(),
+                ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码");
+
+        // 应用 id 只包含数字，作为下载文件名能够避免中文和特殊字符造成响应头兼容问题。
+        projectDownloadService.downloadProjectAsZip(
+                sourceDir.getAbsolutePath(),
+                String.valueOf(appId),
+                response
+        );
     }
 
     /**

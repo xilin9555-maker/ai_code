@@ -9,3 +9,23 @@ spring:
       port: 6379
       password:
       ttl: 3600
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    listener:
+      simple:
+        # 一个应用实例只允许一个截图消费者工作，避免共享浏览器同时切换多个页面。
+        concurrency: 1
+        max-concurrency: 1
+        # 每次只从 RabbitMQ 预取一条任务，多个后端实例并存时能更均匀地分担截图。
+        prefetch: 1
+        # 消费失败先在客户端重试，耗尽次数后拒绝消息，由队列转入死信队列。
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 2s
+          multiplier: 2
+          max-interval: 10s

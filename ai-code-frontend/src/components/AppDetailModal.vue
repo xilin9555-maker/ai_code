@@ -37,7 +37,10 @@ const coverUrl = computed(() => (props.app ? getAppCoverUrl(props.app, 720, 360)
     <Descriptions :column="1" bordered size="small">
       <Descriptions.Item label="应用 ID">{{ app?.id || '—' }}</Descriptions.Item>
       <Descriptions.Item label="生成方式">
-        {{ getCodeGenTypeLabel(app?.codeGenType) }}
+        <a-tag v-if="app?.codeGenType" color="blue">
+          {{ getCodeGenTypeLabel(app.codeGenType) }}
+        </a-tag>
+        <span v-else>未知方式</span>
       </Descriptions.Item>
       <Descriptions.Item label="创建者">
         <span class="creator-info">

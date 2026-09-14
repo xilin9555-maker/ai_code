@@ -1,17 +1,20 @@
 package com.tmz.aicode.service.impl;
 
 import cn.hutool.core.io.FileUtil;
+import com.tmz.aicode.ai.AiCodeGenTypeRoutingService;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
 import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.core.handler.JsonMessageStreamHandler;
 import com.tmz.aicode.core.handler.StreamHandlerExecutor;
 import com.tmz.aicode.exception.BusinessException;
+import com.tmz.aicode.model.dto.app.AppAddRequest;
 import com.tmz.aicode.model.dto.app.AppQueryRequest;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.model.vo.UserVO;
+import com.tmz.aicode.mq.ScreenshotTaskProducer;
 import com.tmz.aicode.service.ChatHistoryService;
 import com.tmz.aicode.service.UserService;
 import org.junit.jupiter.api.Test;
@@ -25,8 +28,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doReturn;
@@ -43,6 +50,48 @@ import static org.mockito.Mockito.when;
 class AppServiceImplTest {
 
     /**
+     * 创建应用时应把整理后的需求交给智能路由，并保存路由选择的生成类型。
+     * 路由服务和数据库写入都由本地模拟对象代替，不会请求真实模型。
+     */
+    @Test
+    void createAppUsesAiSelectedCodeGenType() {
+        AiCodeGenTypeRoutingService routingService = mock(AiCodeGenTypeRoutingService.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(
+                mock(UserService.class),
+                routingService,
+                mock(AiCodeGeneratorFacade.class),
+                mock(ChatHistoryService.class),
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class),
+                mock(ScreenshotTaskProducer.class)
+        ));
+        User loginUser = User.builder().id(1001L).build();
+        String normalizedPrompt = "创建一个带路由和状态管理的商城后台";
+        AppAddRequest request = new AppAddRequest();
+        request.setInitPrompt("  " + normalizedPrompt + "  ");
+        when(routingService.routeCodeGenType(normalizedPrompt))
+                .thenReturn(com.tmz.aicode.model.enums.CodeGenTypeEnum.VUE_PROJECT);
+        doAnswer(invocation -> {
+            App savedApp = invocation.getArgument(0);
+            savedApp.setId(4001L);
+            return true;
+        }).when(appService).save(any(App.class));
+
+        Long appId = appService.createApp(request, loginUser);
+
+        assertEquals(4001L, appId);
+        verify(routingService).routeCodeGenType(normalizedPrompt);
+        verify(appService).save(argThat(savedApp ->
+                normalizedPrompt.equals(savedApp.getInitPrompt())
+                        && normalizedPrompt.substring(0, 12).equals(savedApp.getAppName())
+                        && "vue_project".equals(savedApp.getCodeGenType())
+                        && Integer.valueOf(AppConstant.DEFAULT_APP_PRIORITY)
+                        .equals(savedApp.getPriority())
+                        && loginUser.getId().equals(savedApp.getUserId())
+        ));
+    }
+
+    /**
      * 重复部署已有 deployKey 的应用时应覆盖静态文件并保持访问地址不变。
      */
     @Test
@@ -51,10 +100,12 @@ class AppServiceImplTest {
         VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 userService,
+                mock(AiCodeGenTypeRoutingService.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
-                vueProjectBuilder
+                vueProjectBuilder,
+                mock(ScreenshotTaskProducer.class)
         ));
         long appId = 920001L;
         String deployKey = "aB3xY9";
@@ -85,6 +136,8 @@ class AppServiceImplTest {
                             && deployKey.equals(update.getDeployKey())
                             && update.getDeployedTime() != null
             ));
+            doNothing().when(appService).generateAppScreenshotAsync(
+                    appId, "http://localhost/" + deployKey + "/");
 
             String deployUrl = appService.deployApp(appId, loginUser);
 
@@ -94,6 +147,7 @@ class AppServiceImplTest {
                     FileUtil.readString(new File(deployDir, "index.html"), StandardCharsets.UTF_8)
             );
             verifyNoInteractions(vueProjectBuilder);
+            verify(appService).generateAppScreenshotAsync(appId, deployUrl);
         } finally {
             FileUtil.del(sourceDir);
             FileUtil.del(deployDir);
@@ -110,10 +164,12 @@ class AppServiceImplTest {
         VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
+                mock(AiCodeGenTypeRoutingService.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
-                vueProjectBuilder
+                vueProjectBuilder,
+                mock(ScreenshotTaskProducer.class)
         ));
         long appId = 920002L;
         String deployKey = "vUe123";
@@ -148,6 +204,8 @@ class AppServiceImplTest {
                             && deployKey.equals(update.getDeployKey())
                             && update.getDeployedTime() != null
             ));
+            doNothing().when(appService).generateAppScreenshotAsync(
+                    appId, "http://localhost/" + deployKey + "/");
 
             String deployUrl = appService.deployApp(appId, loginUser);
 
@@ -158,6 +216,7 @@ class AppServiceImplTest {
                     FileUtil.readString(new File(deployDir, "index.html"), StandardCharsets.UTF_8)
             );
             assertFalse(new File(deployDir, "package.json").exists());
+            verify(appService).generateAppScreenshotAsync(appId, deployUrl);
         } finally {
             FileUtil.del(sourceDir);
             FileUtil.del(deployDir);
@@ -172,10 +231,12 @@ class AppServiceImplTest {
         UserService userService = mock(UserService.class);
         AppServiceImpl appService = new AppServiceImpl(
                 userService,
+                mock(AiCodeGenTypeRoutingService.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
-                mock(VueProjectBuilder.class)
+                mock(VueProjectBuilder.class),
+                mock(ScreenshotTaskProducer.class)
         );
         User user = User.builder().id(1001L).userName("创建者").build();
         UserVO userVO = new UserVO();
@@ -205,10 +266,12 @@ class AppServiceImplTest {
     void getQueryWrapperRejectsUnknownSortField() {
         AppServiceImpl appService = new AppServiceImpl(
                 mock(UserService.class),
+                mock(AiCodeGenTypeRoutingService.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
-                mock(VueProjectBuilder.class)
+                mock(VueProjectBuilder.class),
+                mock(ScreenshotTaskProducer.class)
         );
         AppQueryRequest request = new AppQueryRequest();
         request.setSortField("unknownColumn");
@@ -232,10 +295,12 @@ class AppServiceImplTest {
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 userService,
+                mock(AiCodeGenTypeRoutingService.class),
                 facade,
                 chatHistoryService,
                 createStreamHandlerExecutor(),
-                mock(VueProjectBuilder.class)
+                mock(VueProjectBuilder.class),
+                mock(ScreenshotTaskProducer.class)
         ));
         long appId = 2001L;
         User loginUser = User.builder().id(1001L).build();
@@ -293,10 +358,12 @@ class AppServiceImplTest {
         AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
+                mock(AiCodeGenTypeRoutingService.class),
                 facade,
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
-                mock(VueProjectBuilder.class)
+                mock(VueProjectBuilder.class),
+                mock(ScreenshotTaskProducer.class)
         ));
         long appId = 2002L;
         App app = App.builder()
@@ -330,10 +397,12 @@ class AppServiceImplTest {
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
+                mock(AiCodeGenTypeRoutingService.class),
                 facade,
                 chatHistoryService,
                 createStreamHandlerExecutor(),
-                mock(VueProjectBuilder.class)
+                mock(VueProjectBuilder.class),
+                mock(ScreenshotTaskProducer.class)
         ));
         long appId = 2003L;
         long userId = 1003L;
@@ -376,6 +445,31 @@ class AppServiceImplTest {
                 "ai",
                 userId
         );
+    }
+
+    /**
+     * 截图任务应把应用 id 和部署地址完整交给消息生产者。
+     *
+     * 生产者由模拟对象代替，因此测试不会连接 RabbitMQ，也不会启动浏览器或访问 COS。
+     */
+    @Test
+    void generateAppScreenshotAsyncSendsMessage() {
+        ScreenshotTaskProducer screenshotTaskProducer = mock(ScreenshotTaskProducer.class);
+        AppServiceImpl appService = new AppServiceImpl(
+                mock(UserService.class),
+                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGeneratorFacade.class),
+                mock(ChatHistoryService.class),
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class),
+                screenshotTaskProducer
+        );
+        long appId = 920003L;
+        String appUrl = "http://localhost/aB3xY9/";
+
+        appService.generateAppScreenshotAsync(appId, appUrl);
+
+        verify(screenshotTaskProducer).sendScreenshotTask(appId, appUrl);
     }
 
     /**

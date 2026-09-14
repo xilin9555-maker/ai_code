@@ -21,6 +21,12 @@ class CodeParserExecutorTest {
     @Test
     void executeHtmlParser() {
         String response = """
+                ## 设计方案
+                使用清晰的单栏布局和蓝色主色调。
+
+                ## 主要功能
+                - 展示欢迎信息
+
                 ```html
                 <!DOCTYPE html>
                 <html><body><h1>欢迎</h1></body></html>
@@ -40,6 +46,13 @@ class CodeParserExecutorTest {
     @Test
     void executeMultiFileParser() {
         String response = """
+                ## 设计方案
+                使用卡片网格组织作品内容。
+
+                ## 主要功能
+                - 展示作品列表
+                - 提供分类筛选
+
                 ```html
                 <!DOCTYPE html><html><body><h1>作品</h1></body></html>
                 ```

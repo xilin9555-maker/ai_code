@@ -5,6 +5,7 @@ import {
   ArrowLeftOutlined,
   CloudUploadOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   ExpandOutlined,
   InfoCircleOutlined,
@@ -19,6 +20,7 @@ import { listAppChatHistory } from '@/api/chatHistoryController'
 import AppDetailModal from '@/components/AppDetailModal.vue'
 import DeploySuccessModal from '@/components/DeploySuccessModal.vue'
 import { getApiBaseUrl, getDeployUrl, getStaticPreviewUrl } from '@/config/env'
+import { getCodeGenTypeLabel } from '@/constants/codeGenType'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { renderMarkdown } from '@/utils/markdown'
 import { normalizeApp, toApiId, type AppView } from '@/utils/app'
@@ -38,6 +40,7 @@ const loginUserStore = useLoginUserStore()
 const app = ref<AppView>()
 const pageLoading = ref(true)
 const generating = ref(false)
+const downloading = ref(false)
 const deploying = ref(false)
 const deploySuccessOpen = ref(false)
 const deployedUrl = ref('')
@@ -180,9 +183,9 @@ async function loadMoreHistory() {
 /**
  * 读取本轮刚保存的完整 AI 回复。
  *
- * 生成过程中直接展示工具参数增量，保证代码可以持续出现。多个工具并行时，这些临时
- * 片段可能交错；流结束后再采用服务端根据完整工具参数整理的消息，确保 Markdown 中
- * 每个文件都有独立且闭合的代码块。
+ * 生成过程中直接展示工具参数增量，让代码持续出现在页面中。多个文件的工具参数可能
+ * 交错到达，所以流结束后再读取服务端整理好的完整消息，用结构稳定的 Markdown 替换
+ * 临时内容，确保每个文件都有各自闭合的代码块。
  */
 async function loadLatestAssistantContent() {
   try {
@@ -195,7 +198,7 @@ async function loadLatestAssistantContent() {
     )
     return latestAssistant?.message
   } catch {
-    // 临时刷新失败时保留已经收到的流式内容，不能影响本轮生成正常结束。
+    // 刷新失败时继续保留已经收到的流式内容，不能影响本轮生成正常结束。
     return undefined
   }
 }
@@ -300,7 +303,7 @@ async function generateCode(text = userMessage.value) {
     completed = true
     closeStream()
 
-    // 用服务端保存的完整消息替换并行工具产生的临时片段，再交给 Markdown 渲染。
+    // 流式阶段优先保证实时显示，结束后再换成服务端整理过的完整代码块。
     const completedContent = await loadLatestAssistantContent()
     if (completedContent) renderedContent = completedContent
     const assistantMessage = messages.value[assistantMessageIndex]
@@ -337,6 +340,76 @@ function closeStream() {
   }
   eventSource?.close()
   eventSource = undefined
+}
+
+/**
+ * 从下载响应头中读取服务端指定的文件名。
+ * 优先识别支持中文的 filename* 写法，同时兼容普通 filename；响应头没有文件名时，
+ * 使用应用 ID 组成稳定的兜底名称，确保浏览器保存的文件始终带有 zip 后缀。
+ */
+function resolveDownloadFileName(contentDisposition: string | null) {
+  const encodedFileName = contentDisposition?.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encodedFileName) {
+    try {
+      return decodeURIComponent(encodedFileName)
+    } catch {
+      return encodedFileName
+    }
+  }
+
+  return contentDisposition?.match(/filename="?([^";]+)"?/i)?.[1] || `app-${appId.value}.zip`
+}
+
+/**
+ * 下载当前应用的完整源代码压缩包。
+ * fetch 会携带当前登录会话访问后端，后端校验应用归属并返回 ZIP 二进制数据；前端再把
+ * Blob 转成浏览器临时地址，通过隐藏链接触发保存，完成后立即释放临时地址。
+ */
+async function downloadCode() {
+  if (!appId.value) {
+    notification.error('应用 ID 不存在')
+    return
+  }
+  if (!isOwner.value || downloading.value) return
+
+  downloading.value = true
+  try {
+    const downloadEndpoint = new URL(
+      `app/download/${encodeURIComponent(appId.value)}`,
+      getApiBaseUrl(),
+    )
+    const response = await fetch(downloadEndpoint, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/zip' },
+    })
+    const responseContentType = response.headers.get('Content-Type') || ''
+
+    // 业务异常由后端按 JSON 返回，先读取其中的提示，避免把错误内容保存成伪 ZIP 文件。
+    if (responseContentType.includes('application/json')) {
+      const result = (await response.json()) as { message?: string }
+      throw new Error(result.message || `下载失败（HTTP ${response.status}）`)
+    }
+    if (!response.ok) {
+      throw new Error(`下载失败（HTTP ${response.status}）`)
+    }
+
+    const fileBlob = await response.blob()
+    const objectUrl = URL.createObjectURL(fileBlob)
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = resolveDownloadFileName(response.headers.get('Content-Disposition'))
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(objectUrl)
+    notification.success('代码下载成功')
+  } catch (error) {
+    notification.error(error instanceof Error ? error.message : '下载失败，请稍后重试')
+  } finally {
+    downloading.value = false
+  }
 }
 
 /**
@@ -446,12 +519,26 @@ onBeforeUnmount(closeStream)
           </a-button>
           <div>
             <span class="section-kicker">APPLICATION WORKBENCH</span>
-            <h1>{{ app?.appName || '应用工作台' }}</h1>
+            <div class="app-title-row">
+              <h1>{{ app?.appName || '应用工作台' }}</h1>
+              <a-tag v-if="app?.codeGenType" color="blue" class="code-gen-type-tag">
+                {{ getCodeGenTypeLabel(app.codeGenType) }}
+              </a-tag>
+            </div>
           </div>
         </div>
         <div class="workbench-actions">
           <a-button v-if="app?.deployKey" @click="openDeployedWork">
             <ExpandOutlined /> 查看已部署版本
+          </a-button>
+          <a-button
+            v-if="isOwner"
+            type="primary"
+            ghost
+            :loading="downloading"
+            @click="downloadCode"
+          >
+            <DownloadOutlined /> 下载代码
           </a-button>
           <a-button v-if="isOwner" type="primary" :loading="deploying" @click="handleDeploy">
             <CloudUploadOutlined /> 部署应用
@@ -611,12 +698,27 @@ onBeforeUnmount(closeStream)
 }
 
 .workbench-title h1 {
-  margin: 6px 0 0;
+  min-width: 0;
+  margin: 0;
   overflow: hidden;
   font-size: 24px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.app-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 6px;
+}
+
+.code-gen-type-tag {
+  flex: none;
+  margin-inline-end: 0;
+  font-size: 11px;
 }
 
 .workbench-actions {
