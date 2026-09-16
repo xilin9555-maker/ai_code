@@ -23,6 +23,8 @@ import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.model.vo.GenerationStreamEvent;
+import com.tmz.aicode.ratelimit.annotation.RateLimit;
+import com.tmz.aicode.ratelimit.enums.RateLimitType;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.ProjectDownloadService;
 import com.tmz.aicode.service.UserService;
@@ -258,6 +260,12 @@ public class AppController {
      */
     @GetMapping(value = "/chat/gen/code",
             produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
+    @RateLimit(
+            limitType = RateLimitType.USER,
+            rate = 5,
+            rateInterval = 60,
+            message = "AI 对话请求过于频繁，请稍后再试"
+    )
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
                                                        @RequestParam String message,
                                                        @RequestParam(defaultValue = "false")

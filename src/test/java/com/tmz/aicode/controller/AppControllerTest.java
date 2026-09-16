@@ -14,6 +14,8 @@ import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.model.vo.GenerationStreamEvent;
+import com.tmz.aicode.ratelimit.annotation.RateLimit;
+import com.tmz.aicode.ratelimit.enums.RateLimitType;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.ProjectDownloadService;
 import com.tmz.aicode.service.UserService;
@@ -262,6 +264,28 @@ class AppControllerTest {
                 new String[]{MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8"},
                 mapping.produces()
         );
+    }
+
+    /**
+     * 高成本生成接口应按登录用户隔离令牌桶，并限制为每分钟五次。
+     */
+    @Test
+    void chatEndpointDeclaresUserRateLimit() throws NoSuchMethodException {
+        Method method = AppController.class.getMethod(
+                "chatToGenCode",
+                Long.class,
+                String.class,
+                boolean.class,
+                HttpServletRequest.class,
+                HttpServletResponse.class
+        );
+
+        RateLimit rateLimit = method.getAnnotation(RateLimit.class);
+
+        assertEquals(RateLimitType.USER, rateLimit.limitType());
+        assertEquals(5, rateLimit.rate());
+        assertEquals(60, rateLimit.rateInterval());
+        assertEquals("AI 对话请求过于频繁，请稍后再试", rateLimit.message());
     }
 
     /**

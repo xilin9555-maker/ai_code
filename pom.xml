@@ -163,6 +163,15 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
+        <!--
+            使用 Redis 中的分布式令牌桶保护高成本接口。所有后端实例共享同一限流状态，
+            扩容后也不会因为请求被分散到不同实例而绕过频率限制。
+        -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <version>3.50.0</version>
+        </dependency>
 
         <dependency>
             <groupId>com.mysql</groupId>
