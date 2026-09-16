@@ -1,5 +1,28 @@
 # 本地 profile 会继续读取项目根目录中的个人模型配置。
 # 根目录文件不参与打包，部署环境可以改用环境变量或外部配置文件提供相同属性。
+langchain4j:
+  open-ai:
+    # 工程生成使用独立配置项，当前默认沿用流式模型连接信息，后续可以单独切换推理模型。
+    reasoning-streaming-chat-model:
+      base-url: ${langchain4j.open-ai.streaming-chat-model.base-url}
+      api-key: ${langchain4j.open-ai.streaming-chat-model.api-key}
+      model-name: ${langchain4j.open-ai.streaming-chat-model.model-name}
+      max-tokens: 8192
+      temperature: 0.1
+      timeout: ${langchain4j.open-ai.streaming-chat-model.timeout:120s}
+      log-requests: ${langchain4j.open-ai.streaming-chat-model.log-requests:false}
+      log-responses: ${langchain4j.open-ai.streaming-chat-model.log-responses:false}
+    # 路由和工作流中的短分析任务使用轻量配置，避免占用代码生成模型的连接。
+    routing-chat-model:
+      base-url: ${langchain4j.open-ai.chat-model.base-url}
+      api-key: ${langchain4j.open-ai.chat-model.api-key}
+      model-name: ${langchain4j.open-ai.chat-model.model-name}
+      max-tokens: 1024
+      temperature: 0.0
+      timeout: ${langchain4j.open-ai.chat-model.timeout:120s}
+      log-requests: ${langchain4j.open-ai.chat-model.log-requests:false}
+      log-responses: ${langchain4j.open-ai.chat-model.log-responses:false}
+
 spring:
   config:
     import: optional:file:./application_local.yml

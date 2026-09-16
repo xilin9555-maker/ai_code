@@ -8,6 +8,7 @@ import cn.hutool.core.util.StrUtil;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.tmz.aicode.ai.AiCodeGenTypeRoutingService;
+import com.tmz.aicode.ai.AiCodeGenTypeRoutingServiceFactory;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
 import com.tmz.aicode.core.builder.VueProjectBuilder;
@@ -73,7 +74,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     private final UserService userService;
 
-    private final AiCodeGenTypeRoutingService aiCodeGenTypeRoutingService;
+    private final AiCodeGenTypeRoutingServiceFactory aiCodeGenTypeRoutingServiceFactory;
 
     private final AiCodeGeneratorFacade aiCodeGeneratorFacade;
 
@@ -86,14 +87,14 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private final ScreenshotTaskProducer screenshotTaskProducer;
 
     public AppServiceImpl(UserService userService,
-                          AiCodeGenTypeRoutingService aiCodeGenTypeRoutingService,
+                          AiCodeGenTypeRoutingServiceFactory aiCodeGenTypeRoutingServiceFactory,
                           AiCodeGeneratorFacade aiCodeGeneratorFacade,
                           ChatHistoryService chatHistoryService,
                           StreamHandlerExecutor streamHandlerExecutor,
                           VueProjectBuilder vueProjectBuilder,
                           ScreenshotTaskProducer screenshotTaskProducer) {
         this.userService = userService;
-        this.aiCodeGenTypeRoutingService = aiCodeGenTypeRoutingService;
+        this.aiCodeGenTypeRoutingServiceFactory = aiCodeGenTypeRoutingServiceFactory;
         this.aiCodeGeneratorFacade = aiCodeGeneratorFacade;
         this.chatHistoryService = chatHistoryService;
         this.streamHandlerExecutor = streamHandlerExecutor;
@@ -118,8 +119,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         ThrowUtils.throwIf(loginUser == null || loginUser.getId() == null,
                 ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
 
-        CodeGenTypeEnum selectedCodeGenType =
-                aiCodeGenTypeRoutingService.routeCodeGenType(initPrompt);
+        // 每次创建应用都构造新的路由服务，确保并发请求使用彼此独立的模型实例。
+        AiCodeGenTypeRoutingService routingService =
+                aiCodeGenTypeRoutingServiceFactory.createAiCodeGenTypeRoutingService();
+        CodeGenTypeEnum selectedCodeGenType = routingService.routeCodeGenType(initPrompt);
         ThrowUtils.throwIf(selectedCodeGenType == null,
                 ErrorCode.SYSTEM_ERROR, "未能确定代码生成类型");
 

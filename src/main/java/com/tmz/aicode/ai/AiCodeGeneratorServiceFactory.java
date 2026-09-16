@@ -14,8 +14,9 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -24,8 +25,8 @@ import java.time.Duration;
 /**
  * 创建网页代码生成服务的 Spring 配置。
  *
- * ChatModel 由 LangChain4j 的 Spring Boot Starter 根据本地模型配置创建。工厂在模型
- * 外面绑定以应用 id 隔离的 Redis 对话记忆，再生成 AiCodeGeneratorService 代理对象。
+ * 工厂为每个应用取得独立的流式模型，并绑定以应用 id 隔离的 Redis 对话记忆，再生成
+ * AiCodeGeneratorService 代理对象。
  * 创建完成的代理会按应用 id 缓存在本地，减少重复构造；缓存失效后重新创建的代理仍能
  * 从相同的 Redis Key 恢复上下文，因此本地缓存过期不会导致对话记忆丢失。
  */
@@ -35,8 +36,8 @@ import java.time.Duration;
 public class AiCodeGeneratorServiceFactory {
 
     private final ChatModel chatModel;
-    private final StreamingChatModel openAiStreamingChatModel;
-    private final StreamingChatModel reasoningStreamingChatModel;
+    private final ObjectProvider<StreamingChatModel> streamingChatModelProvider;
+    private final ObjectProvider<StreamingChatModel> reasoningStreamingChatModelProvider;
     private final RedisChatMemoryStore redisChatMemoryStore;
     private final ChatHistoryService chatHistoryService;
     private final ToolManager toolManager;
@@ -61,23 +62,25 @@ public class AiCodeGeneratorServiceFactory {
      * 使用构造器接收统一的对话模型，依赖关系清晰，也便于在测试中替换为模拟模型。
      *
      * @param chatModel 已完成地址、密钥和模型名称配置的普通对话模型
-     * @param openAiStreamingChatModel 处理现有网页生成任务的默认流式模型
-     * @param reasoningStreamingChatModel 处理复杂工程项目生成任务的推理流式模型
+     * @param streamingChatModelProvider 按需提供默认流式模型的新实例
+     * @param reasoningStreamingChatModelProvider 按需提供推理流式模型的新实例
      * @param redisChatMemoryStore 负责持久化各个应用对话记忆的 Redis 存储
      * @param chatHistoryService 负责在缓存未命中时从数据库恢复已有对话
      * @param toolManager 统一提供 Vue 工程模式可调用的文件工具
      */
-    public AiCodeGeneratorServiceFactory(ChatModel chatModel,
-                                         @Qualifier("openAiStreamingChatModel")
-                                         StreamingChatModel openAiStreamingChatModel,
-                                         @Qualifier("reasoningStreamingChatModel")
-                                         StreamingChatModel reasoningStreamingChatModel,
+    public AiCodeGeneratorServiceFactory(@Qualifier("openAiChatModel") ChatModel chatModel,
+                                         @Qualifier("streamingChatModelPrototype")
+                                         ObjectProvider<StreamingChatModel>
+                                                 streamingChatModelProvider,
+                                         @Qualifier("reasoningStreamingChatModelPrototype")
+                                         ObjectProvider<StreamingChatModel>
+                                                 reasoningStreamingChatModelProvider,
                                          RedisChatMemoryStore redisChatMemoryStore,
                                          ChatHistoryService chatHistoryService,
                                          ToolManager toolManager) {
         this.chatModel = chatModel;
-        this.openAiStreamingChatModel = openAiStreamingChatModel;
-        this.reasoningStreamingChatModel = reasoningStreamingChatModel;
+        this.streamingChatModelProvider = streamingChatModelProvider;
+        this.reasoningStreamingChatModelProvider = reasoningStreamingChatModelProvider;
         this.redisChatMemoryStore = redisChatMemoryStore;
         this.chatHistoryService = chatHistoryService;
         this.toolManager = toolManager;
@@ -144,24 +147,33 @@ public class AiCodeGeneratorServiceFactory {
         chatHistoryService.loadChatHistoryToMemory(appId, chatMemory, maxMessages);
 
         return switch (codeGenType) {
-            case VUE_PROJECT -> AiServices.builder(AiCodeGeneratorService.class)
-                    .streamingChatModel(reasoningStreamingChatModel)
-                    // 服务方法声明了 @MemoryId，因此这里必须提供按 memoryId 获取记忆的方式。
-                    .chatMemoryProvider(memoryId -> chatMemory)
-                    // 显式转成 Object[]，确保数组按可变参数展开，而不是被当作一个工具对象。
-                    .tools((Object[]) toolManager.getAllTools())
-                    // 模型偶尔会编造工具名。把错误作为工具结果返回，可让模型自行改正并继续。
-                    .hallucinatedToolNameStrategy(toolRequest -> ToolExecutionResultMessage.from(
-                            toolRequest,
-                            "工具不存在：" + toolRequest.name() + "，请只使用已提供的工具"
-                    ))
-                    .maxSequentialToolsInvocations(40)
-                    .build();
-            case HTML, MULTI_FILE -> AiServices.builder(AiCodeGeneratorService.class)
-                    .chatModel(chatModel)
-                    .streamingChatModel(openAiStreamingChatModel)
-                    .chatMemory(chatMemory)
-                    .build();
+            case VUE_PROJECT -> {
+                // 每个工程服务绑定新的推理流式模型，使不同应用可以并行消费模型响应。
+                StreamingChatModel reasoningStreamingChatModel =
+                        reasoningStreamingChatModelProvider.getObject();
+                yield AiServices.builder(AiCodeGeneratorService.class)
+                        .streamingChatModel(reasoningStreamingChatModel)
+                        // 服务方法声明了 @MemoryId，因此这里必须提供按 memoryId 获取记忆的方式。
+                        .chatMemoryProvider(memoryId -> chatMemory)
+                        // 显式转成 Object[]，确保数组按可变参数展开，而不是被当作一个工具对象。
+                        .tools((Object[]) toolManager.getAllTools())
+                        // 模型偶尔会编造工具名。把错误作为工具结果返回，可让模型自行改正并继续。
+                        .hallucinatedToolNameStrategy(toolRequest -> ToolExecutionResultMessage.from(
+                                toolRequest,
+                                "工具不存在：" + toolRequest.name() + "，请只使用已提供的工具"
+                        ))
+                        .maxSequentialToolsInvocations(40)
+                        .build();
+            }
+            case HTML, MULTI_FILE -> {
+                // 普通网页服务也按应用取得独立流式模型，避免共享模型导致请求排队。
+                StreamingChatModel streamingChatModel = streamingChatModelProvider.getObject();
+                yield AiServices.builder(AiCodeGeneratorService.class)
+                        .chatModel(chatModel)
+                        .streamingChatModel(streamingChatModel)
+                        .chatMemory(chatMemory)
+                        .build();
+            }
         };
     }
 

@@ -171,6 +171,27 @@ public class AppController {
     }
 
     /**
+     * 获取当前用户自己创建的应用详情。
+     *
+     * 编辑页面使用该接口读取数据。应用 id 即使被人为替换，服务端仍会根据 Session 中的
+     * 登录用户校验所有者，避免只依赖前端路由判断造成越权访问。
+     *
+     * @param id 应用 id
+     * @param request 当前请求，用于读取登录用户
+     * @return 当前用户拥有的应用详情
+     */
+    @GetMapping("/my/get/vo")
+    public BaseResponse<AppVO> getMyAppVOById(@RequestParam long id,
+                                               HttpServletRequest request) {
+        ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
+        User loginUser = userService.getLoginUser(request);
+        App app = getExistingApp(id);
+        ThrowUtils.throwIf(!Objects.equals(app.getUserId(), loginUser.getId()),
+                ErrorCode.NO_AUTH_ERROR, "只能查看自己创建的应用");
+        return ResultUtils.success(appService.getAppVO(app));
+    }
+
+    /**
      * 分页获取当前用户创建的应用。
      *
      * userId 始终由 Session 中的登录用户确定，不接受客户端指定。这样即使请求体带有别人的

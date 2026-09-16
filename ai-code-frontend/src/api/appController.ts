@@ -137,6 +137,20 @@ export async function getAppVoById(
   })
 }
 
+/** 获取当前登录用户自己的应用详情 GET /app/my/get/vo */
+export async function getMyAppVoById(
+  params: API.getMyAppVOByIdParams,
+  options?: import('axios').AxiosRequestConfig
+) {
+  return request<API.BaseResponseAppVO>('/app/my/get/vo', {
+    method: 'GET',
+    params: {
+      ...params,
+    },
+    ...(options || {}),
+  })
+}
+
 /** 此处后端没有提供注释 POST /app/good/list/page/vo */
 export async function listGoodAppVoByPage(
   body: API.AppQueryRequest,

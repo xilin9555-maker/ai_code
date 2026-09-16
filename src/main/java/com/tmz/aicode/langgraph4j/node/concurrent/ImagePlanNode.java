@@ -1,6 +1,7 @@
 package com.tmz.aicode.langgraph4j.node.concurrent;
 
 import com.tmz.aicode.langgraph4j.ai.ImageCollectionPlanService;
+import com.tmz.aicode.langgraph4j.ai.ImageCollectionPlanServiceFactory;
 import com.tmz.aicode.langgraph4j.model.ImageCollectionPlan;
 import com.tmz.aicode.langgraph4j.state.WorkflowContext;
 import com.tmz.aicode.utils.SpringContextUtil;
@@ -36,8 +37,10 @@ public final class ImagePlanNode {
             WorkflowContext context = requireContext(state);
             String originalPrompt = context.getOriginalPrompt();
             try {
+                ImageCollectionPlanServiceFactory planServiceFactory =
+                        SpringContextUtil.getBean(ImageCollectionPlanServiceFactory.class);
                 ImageCollectionPlanService planService =
-                        SpringContextUtil.getBean(ImageCollectionPlanService.class);
+                        planServiceFactory.createImageCollectionPlanService();
                 ImageCollectionPlan plan = planService.planImageCollection(originalPrompt);
                 log.info("生成图片收集计划，准备启动并发分支");
                 context.setImageCollectionPlan(plan);

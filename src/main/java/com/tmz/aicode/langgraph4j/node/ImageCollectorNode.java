@@ -1,6 +1,7 @@
 package com.tmz.aicode.langgraph4j.node;
 
 import com.tmz.aicode.langgraph4j.ai.ImageCollectionPlanService;
+import com.tmz.aicode.langgraph4j.ai.ImageCollectionPlanServiceFactory;
 import com.tmz.aicode.langgraph4j.model.ImageCollectionPlan;
 import com.tmz.aicode.langgraph4j.model.ImageResource;
 import com.tmz.aicode.langgraph4j.state.WorkflowContext;
@@ -52,8 +53,10 @@ public final class ImageCollectorNode {
             stopWatch.start();
             try {
                 // 第一步：由 AI 一次性生成四类图片的结构化收集计划。
+                ImageCollectionPlanServiceFactory planServiceFactory =
+                        SpringContextUtil.getBean(ImageCollectionPlanServiceFactory.class);
                 ImageCollectionPlanService planService =
-                        SpringContextUtil.getBean(ImageCollectionPlanService.class);
+                        planServiceFactory.createImageCollectionPlanService();
                 ImageCollectionPlan plan = planService.planImageCollection(originalPrompt);
                 log.info("获取到图片收集计划，开始并发执行");
 

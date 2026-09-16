@@ -13,42 +13,27 @@ import org.springframework.context.annotation.Scope;
 import java.time.Duration;
 
 /**
- * 工程项目生成使用的推理流式模型配置。
+ * 默认流式对话模型配置。
  *
- * 该配置拥有独立属性前缀，可以为复杂工程选择更大的输出上限或专用推理模型。Bean 使用
- * prototype 作用域，确保并发工程生成不会共享同一个底层流式响应读取器。
+ * 模型使用 prototype 作用域，每次从 Spring 容器获取时都会创建独立实例。不同应用的
+ * 流式请求不会共享底层同步响应读取器，因此可以同时等待和消费各自的模型响应。
  */
 @Data
 @Configuration
-@ConfigurationProperties(prefix = "langchain4j.open-ai.reasoning-streaming-chat-model")
-@ConditionalOnProperty(
-        prefix = "langchain4j.open-ai.reasoning-streaming-chat-model",
-        name = "api-key"
-)
-public class ReasoningStreamingChatModelConfig {
+@ConfigurationProperties(prefix = "langchain4j.open-ai.streaming-chat-model")
+@ConditionalOnProperty(prefix = "langchain4j.open-ai.streaming-chat-model", name = "api-key")
+public class StreamingChatModelConfig {
 
-    /**
-     * OpenAI 兼容接口地址，例如 DeepSeek 的 API 地址。
-     */
     private String baseUrl;
 
-    /**
-     * 调用模型所需的密钥，只从本地配置或部署环境读取。
-     */
     private String apiKey;
 
-    /** 工程生成使用的模型名称。 */
     private String modelName;
 
-    /** 单次生成允许返回的最大 token 数。 */
     private Integer maxTokens;
 
-    /** 较低温度可以让文件结构和工具调用更稳定。 */
     private Double temperature;
 
-    /**
-     * 单次模型请求的最长等待时间，默认给工程生成保留两分钟。
-     */
     private Duration timeout = Duration.ofSeconds(120);
 
     private Boolean logRequests = false;
@@ -56,13 +41,13 @@ public class ReasoningStreamingChatModelConfig {
     private Boolean logResponses = false;
 
     /**
-     * 创建专门用于工程项目生成的流式模型。
+     * 创建一个新的默认流式模型实例。
      *
-     * @return 仅由当前工程生成服务使用的流式模型
+     * @return 仅由当前 AI Service 使用的流式模型
      */
-    @Bean("reasoningStreamingChatModelPrototype")
+    @Bean("streamingChatModelPrototype")
     @Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE)
-    public StreamingChatModel reasoningStreamingChatModelPrototype() {
+    public StreamingChatModel streamingChatModelPrototype() {
         return OpenAiStreamingChatModel.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)

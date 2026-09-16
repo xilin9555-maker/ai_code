@@ -2,6 +2,7 @@ package com.tmz.aicode.service.impl;
 
 import cn.hutool.core.io.FileUtil;
 import com.tmz.aicode.ai.AiCodeGenTypeRoutingService;
+import com.tmz.aicode.ai.AiCodeGenTypeRoutingServiceFactory;
 import com.tmz.aicode.ai.tools.ToolManager;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
@@ -61,9 +62,11 @@ class AppServiceImplTest {
     @Test
     void createAppUsesAiSelectedCodeGenType() {
         AiCodeGenTypeRoutingService routingService = mock(AiCodeGenTypeRoutingService.class);
+        AiCodeGenTypeRoutingServiceFactory routingServiceFactory =
+                mock(AiCodeGenTypeRoutingServiceFactory.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
-                routingService,
+                routingServiceFactory,
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
@@ -74,6 +77,8 @@ class AppServiceImplTest {
         String normalizedPrompt = "创建一个带路由和状态管理的商城后台";
         AppAddRequest request = new AppAddRequest();
         request.setInitPrompt("  " + normalizedPrompt + "  ");
+        when(routingServiceFactory.createAiCodeGenTypeRoutingService())
+                .thenReturn(routingService);
         when(routingService.routeCodeGenType(normalizedPrompt))
                 .thenReturn(com.tmz.aicode.model.enums.CodeGenTypeEnum.VUE_PROJECT);
         doAnswer(invocation -> {
@@ -85,6 +90,7 @@ class AppServiceImplTest {
         Long appId = appService.createApp(request, loginUser);
 
         assertEquals(4001L, appId);
+        verify(routingServiceFactory).createAiCodeGenTypeRoutingService();
         verify(routingService).routeCodeGenType(normalizedPrompt);
         verify(appService).save(argThat(savedApp ->
                 normalizedPrompt.equals(savedApp.getInitPrompt())
@@ -105,7 +111,7 @@ class AppServiceImplTest {
         VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 userService,
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
@@ -169,7 +175,7 @@ class AppServiceImplTest {
         VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
@@ -236,7 +242,7 @@ class AppServiceImplTest {
         UserService userService = mock(UserService.class);
         AppServiceImpl appService = new AppServiceImpl(
                 userService,
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
@@ -271,7 +277,7 @@ class AppServiceImplTest {
     void getQueryWrapperRejectsUnknownSortField() {
         AppServiceImpl appService = new AppServiceImpl(
                 mock(UserService.class),
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
@@ -300,7 +306,7 @@ class AppServiceImplTest {
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 userService,
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 facade,
                 chatHistoryService,
                 createStreamHandlerExecutor(),
@@ -366,7 +372,7 @@ class AppServiceImplTest {
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 facade,
                 chatHistoryService,
                 createStreamHandlerExecutor(),
@@ -431,7 +437,7 @@ class AppServiceImplTest {
         AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 facade,
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),
@@ -470,7 +476,7 @@ class AppServiceImplTest {
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
         AppServiceImpl appService = spy(new AppServiceImpl(
                 mock(UserService.class),
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 facade,
                 chatHistoryService,
                 createStreamHandlerExecutor(),
@@ -530,7 +536,7 @@ class AppServiceImplTest {
         ScreenshotTaskProducer screenshotTaskProducer = mock(ScreenshotTaskProducer.class);
         AppServiceImpl appService = new AppServiceImpl(
                 mock(UserService.class),
-                mock(AiCodeGenTypeRoutingService.class),
+                mock(AiCodeGenTypeRoutingServiceFactory.class),
                 mock(AiCodeGeneratorFacade.class),
                 mock(ChatHistoryService.class),
                 createStreamHandlerExecutor(),

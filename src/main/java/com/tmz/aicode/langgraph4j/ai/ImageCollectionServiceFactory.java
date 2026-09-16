@@ -8,13 +8,15 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.service.AiServices;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
  * 图片收集 AI 服务创建工厂。
  *
- * 该配置类把项目中现有的对话模型和四类图片工具组合成 ImageCollectionService。
+ * 该配置类把按任务创建的对话模型和四类图片工具组合成 ImageCollectionService。
  * 模型只负责根据用户需求决定调用哪些工具，各工具负责执行搜索、绘制或生成操作，
  * 服务代理负责收集工具返回的图片资源。
  */
@@ -22,9 +24,13 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class ImageCollectionServiceFactory {
 
-    /** 复用项目已经配置的非流式对话模型，用于分析需求和调度工具。 */
-    @Resource
-    private ChatModel chatModel;
+    private final ObjectProvider<ChatModel> routingChatModelProvider;
+
+    public ImageCollectionServiceFactory(
+            @Qualifier("routingChatModelPrototype")
+            ObjectProvider<ChatModel> routingChatModelProvider) {
+        this.routingChatModelProvider = routingChatModelProvider;
+    }
 
     /** 搜索与网站主题相关的内容图片。 */
     @Resource
@@ -50,8 +56,8 @@ public class ImageCollectionServiceFactory {
      *
      * @return 已绑定对话模型和全部图片工具的服务代理
      */
-    @Bean
     public ImageCollectionService createImageCollectionService() {
+        ChatModel chatModel = routingChatModelProvider.getObject();
         return AiServices.builder(ImageCollectionService.class)
                 .chatModel(chatModel)
                 .tools(
@@ -61,5 +67,11 @@ public class ImageCollectionServiceFactory {
                         logoGeneratorTool
                 )
                 .build();
+    }
+
+    /** 保留默认 Bean，按需调用工厂方法时会为每次任务创建独立服务。 */
+    @Bean
+    public ImageCollectionService imageCollectionService() {
+        return createImageCollectionService();
     }
 }

@@ -3,6 +3,7 @@ package com.tmz.aicode.langgraph4j.node;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import com.tmz.aicode.langgraph4j.ai.CodeQualityCheckService;
+import com.tmz.aicode.langgraph4j.ai.CodeQualityCheckServiceFactory;
 import com.tmz.aicode.langgraph4j.model.QualityResult;
 import com.tmz.aicode.langgraph4j.state.WorkflowContext;
 import com.tmz.aicode.utils.SpringContextUtil;
@@ -64,8 +65,10 @@ public final class CodeQualityCheckNode {
                             .build();
                 } else {
                     // 第二步：调用结构化输出服务，让 AI 返回明确的检查结论。
+                    CodeQualityCheckServiceFactory qualityCheckServiceFactory =
+                            SpringContextUtil.getBean(CodeQualityCheckServiceFactory.class);
                     CodeQualityCheckService qualityCheckService =
-                            SpringContextUtil.getBean(CodeQualityCheckService.class);
+                            qualityCheckServiceFactory.createCodeQualityCheckService();
                     qualityResult = qualityCheckService.checkCodeQuality(codeContent);
                     log.info("代码质量检查完成，是否通过：{}", qualityResult.getIsValid());
                 }

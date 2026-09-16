@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons-vue'
-import { InputNumber, message, Skeleton, type FormInstance } from 'ant-design-vue'
-import { getAppVoById, updateApp, updateAppByAdmin } from '@/api/appController'
+import { ArrowLeftOutlined, DeleteOutlined, SaveOutlined } from '@ant-design/icons-vue'
+import { InputNumber, message, Modal, Skeleton, type FormInstance } from 'ant-design-vue'
+import {
+  deleteApp,
+  deleteAppByAdmin,
+  getAppVoByIdByAdmin,
+  getMyAppVoById,
+  updateApp,
+  updateAppByAdmin,
+} from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { getCodeGenTypeLabel } from '@/constants/codeGenType'
 import { normalizeApp, toApiId, type AppView } from '@/utils/app'
@@ -15,6 +22,7 @@ const appId = computed(() => String(route.params.id ?? ''))
 const app = ref<AppView>()
 const loading = ref(true)
 const saving = ref(false)
+const deleting = ref(false)
 const formRef = ref<FormInstance>()
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
 
@@ -25,20 +33,19 @@ const form = reactive({
 })
 
 /**
- * 读取应用后同时检查页面操作权限。
- * 普通用户只能编辑自己的应用，管理员可以维护任意应用的展示信息和精选优先级。
+ * 根据当前身份读取可编辑的应用详情。
+ * 普通用户接口会在服务端校验应用所有者，管理员接口由管理员权限拦截器保护；前端不再
+ * 使用缓存中的用户 id 重复判断，避免长整型 id 的表示差异造成本人被误判为无权限。
  */
 async function loadApp() {
   loading.value = true
   try {
-    const response = await getAppVoById({ id: toApiId(appId.value) })
+    const id = toApiId(appId.value)
+    const response = isAdmin.value
+      ? await getAppVoByIdByAdmin({ id })
+      : await getMyAppVoById({ id })
     if (!response.data.data) return
     const currentApp = normalizeApp(response.data.data)
-    const currentUserId = String(loginUserStore.loginUser.id ?? '')
-    if (!isAdmin.value && currentApp.userId !== currentUserId) {
-      await router.replace('/no-auth')
-      return
-    }
 
     app.value = currentApp
     Object.assign(form, {
@@ -52,6 +59,40 @@ async function loadApp() {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * 根据当前身份调用对应的删除接口，并在成功后返回应用列表。
+ * 普通删除接口还会在服务端校验应用所有者，不能通过修改路由 id 删除他人应用。
+ */
+async function deleteCurrentApp() {
+  if (deleting.value || !app.value) return
+  deleting.value = true
+  try {
+    const id = toApiId(appId.value)
+    const response = isAdmin.value ? await deleteAppByAdmin({ id }) : await deleteApp({ id })
+    if (response.data.data) {
+      message.success('应用已删除')
+      await router.replace(isAdmin.value ? '/admin/app-manage' : '/my-apps')
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '删除失败，请稍后重试')
+  } finally {
+    deleting.value = false
+  }
+}
+
+/** 删除属于不可逆操作，提交前明确展示应用名称并要求二次确认。 */
+function confirmDelete() {
+  if (!app.value) return
+  Modal.confirm({
+    title: `删除“${app.value.appName || '未命名应用'}”？`,
+    content: '删除后，该应用和相关对话将无法继续访问。',
+    okText: '确认删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: deleteCurrentApp,
+  })
 }
 
 /**
@@ -166,10 +207,15 @@ onMounted(loadApp)
         </a-form-item>
 
         <div class="form-actions">
-          <a-button @click="router.back()">取消</a-button>
-          <a-button type="primary" html-type="submit" :loading="saving">
-            <SaveOutlined /> 保存修改
+          <a-button danger :loading="deleting" :disabled="saving" @click="confirmDelete">
+            <DeleteOutlined v-if="!deleting" /> 删除应用
           </a-button>
+          <div class="form-primary-actions">
+            <a-button :disabled="deleting" @click="router.back()">取消</a-button>
+            <a-button type="primary" html-type="submit" :loading="saving" :disabled="deleting">
+              <SaveOutlined /> 保存修改
+            </a-button>
+          </div>
         </div>
       </a-form>
     </section>
@@ -280,10 +326,17 @@ onMounted(loadApp)
 
 .form-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 9px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
+}
+
+.form-primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
 }
 
 @media (max-width: 760px) {
@@ -294,6 +347,15 @@ onMounted(loadApp)
 
   .cover-preview {
     height: 230px;
+  }
+
+  .form-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .form-primary-actions {
+    justify-content: flex-end;
   }
 }
 </style>

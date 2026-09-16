@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import {
   ArrowRightOutlined,
   CodeOutlined,
+  DeleteOutlined,
   EditOutlined,
   EyeOutlined,
   UserOutlined,
@@ -17,9 +18,14 @@ const props = withDefaults(
   defineProps<{
     app: AppView
     editable?: boolean
+    deletable?: boolean
+    deleting?: boolean
   }>(),
-  { editable: false },
+  { editable: false, deletable: false, deleting: false },
 )
+const emit = defineEmits<{
+  delete: [app: AppView]
+}>()
 
 const router = useRouter()
 const displayName = computed(() => props.app.appName || '未命名应用')
@@ -71,9 +77,21 @@ function openWork() {
             <span :title="creatorName">{{ creatorName }}</span>
           </div>
         </div>
-        <a-button v-if="editable" type="text" aria-label="编辑应用" @click="openEditor">
-          <EditOutlined />
-        </a-button>
+        <div v-if="editable || deletable" class="card-title-actions">
+          <a-button v-if="editable" type="text" aria-label="编辑应用" @click="openEditor">
+            <EditOutlined />
+          </a-button>
+          <a-button
+            v-if="deletable"
+            type="text"
+            danger
+            aria-label="删除应用"
+            :loading="deleting"
+            @click="emit('delete', app)"
+          >
+            <DeleteOutlined v-if="!deleting" />
+          </a-button>
+        </div>
       </div>
       <p class="app-description">{{ app.initPrompt || '暂未填写应用介绍' }}</p>
       <div class="app-card-meta">
@@ -189,6 +207,13 @@ function openWork() {
 
 .creator-text {
   min-width: 0;
+}
+
+.card-title-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
 }
 
 .app-card h3 {

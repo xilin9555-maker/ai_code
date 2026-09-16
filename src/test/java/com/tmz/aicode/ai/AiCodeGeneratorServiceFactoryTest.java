@@ -13,7 +13,9 @@ import dev.langchain4j.community.store.memory.chat.redis.RedisChatMemoryStore;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -22,6 +24,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * 验证 AI Service 工厂的本地缓存和应用隔离规则。
@@ -33,15 +36,29 @@ class AiCodeGeneratorServiceFactoryTest {
 
     private final ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
 
-    private final AiCodeGeneratorServiceFactory serviceFactory =
-            new AiCodeGeneratorServiceFactory(
-                    mock(ChatModel.class),
-                    mock(StreamingChatModel.class),
-                    mock(StreamingChatModel.class),
-                    mock(RedisChatMemoryStore.class),
-                    chatHistoryService,
-                    createToolManager()
-            );
+    private final ObjectProvider<StreamingChatModel> streamingModelProvider =
+            mock();
+
+    private final ObjectProvider<StreamingChatModel> reasoningModelProvider =
+            mock();
+
+    private AiCodeGeneratorServiceFactory serviceFactory;
+
+    @BeforeEach
+    void setUp() {
+        when(streamingModelProvider.getObject()).thenAnswer(
+                ignored -> mock(StreamingChatModel.class));
+        when(reasoningModelProvider.getObject()).thenAnswer(
+                ignored -> mock(StreamingChatModel.class));
+        serviceFactory = new AiCodeGeneratorServiceFactory(
+                mock(ChatModel.class),
+                streamingModelProvider,
+                reasoningModelProvider,
+                mock(RedisChatMemoryStore.class),
+                chatHistoryService,
+                createToolManager()
+        );
+    }
 
     /**
      * 同一个应用连续获取服务时应命中 Caffeine，避免重复构造代理和对话记忆对象。
@@ -52,6 +69,7 @@ class AiCodeGeneratorServiceFactoryTest {
         AiCodeGeneratorService secondService = serviceFactory.getAiCodeGeneratorService(1001L);
 
         assertSame(firstService, secondService, "相同 appId 应返回同一个缓存实例");
+        verify(streamingModelProvider, times(1)).getObject();
         verify(chatHistoryService, times(1))
                 .loadChatHistoryToMemory(eq(1001L), any(MessageWindowChatMemory.class), eq(20));
     }
@@ -82,6 +100,7 @@ class AiCodeGeneratorServiceFactoryTest {
         AiCodeGeneratorService secondService = serviceFactory.getAiCodeGeneratorService(2001L);
 
         assertNotSame(firstService, secondService, "不同 appId 应创建彼此独立的服务实例");
+        verify(streamingModelProvider, times(2)).getObject();
     }
 
     /**
@@ -95,6 +114,8 @@ class AiCodeGeneratorServiceFactoryTest {
                 1001L, CodeGenTypeEnum.VUE_PROJECT);
 
         assertNotSame(htmlService, vueService, "不同生成类型应使用不同的缓存实例");
+        verify(streamingModelProvider, times(1)).getObject();
+        verify(reasoningModelProvider, times(1)).getObject();
         verify(chatHistoryService).loadChatHistoryToMemory(
                 eq(1001L), any(MessageWindowChatMemory.class), eq(100));
     }

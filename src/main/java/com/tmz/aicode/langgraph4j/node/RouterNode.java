@@ -1,6 +1,7 @@
 package com.tmz.aicode.langgraph4j.node;
 
 import com.tmz.aicode.ai.AiCodeGenTypeRoutingService;
+import com.tmz.aicode.ai.AiCodeGenTypeRoutingServiceFactory;
 import com.tmz.aicode.langgraph4j.state.WorkflowContext;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.utils.SpringContextUtil;
@@ -44,8 +45,10 @@ public final class RouterNode {
             } else {
                 try {
                     // 独立运行工作流时仍由路由服务根据原始需求选择生成类型。
+                    AiCodeGenTypeRoutingServiceFactory routingServiceFactory =
+                            SpringContextUtil.getBean(AiCodeGenTypeRoutingServiceFactory.class);
                     AiCodeGenTypeRoutingService routingService =
-                            SpringContextUtil.getBean(AiCodeGenTypeRoutingService.class);
+                            routingServiceFactory.createAiCodeGenTypeRoutingService();
                     generationType = routingService.routeCodeGenType(context.getOriginalPrompt());
                     log.info("智能路由完成，选择类型：{}（{}）",
                             generationType.getValue(), generationType.getText());

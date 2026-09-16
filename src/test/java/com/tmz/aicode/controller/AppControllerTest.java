@@ -2,16 +2,22 @@ package com.tmz.aicode.controller;
 
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.json.JSONUtil;
+import com.mybatisflex.core.paginate.Page;
+import com.mybatisflex.core.query.QueryWrapper;
+import com.tmz.aicode.common.DeleteRequest;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.exception.BusinessException;
+import com.tmz.aicode.model.dto.app.AppQueryRequest;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
+import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.ProjectDownloadService;
 import com.tmz.aicode.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -29,9 +35,13 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.same;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -48,6 +58,159 @@ import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standal
  * 流式内容由模拟服务直接提供，测试不会连接数据库或请求模型。
  */
 class AppControllerTest {
+
+    /**
+     * 当前用户读取自己创建的应用时，控制器应返回服务层组装后的详情。
+     */
+    @Test
+    void getMyAppReturnsOwnedApplication() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        long appId = 2001L;
+        long userId = 1001L;
+        App app = App.builder().id(appId).userId(userId).build();
+        AppVO appVO = new AppVO();
+        appVO.setId(appId);
+        when(userService.getLoginUser(request)).thenReturn(User.builder().id(userId).build());
+        when(appService.getById(appId)).thenReturn(app);
+        when(appService.getAppVO(app)).thenReturn(appVO);
+
+        AppVO result = controller.getMyAppVOById(appId, request).getData();
+
+        assertSame(appVO, result);
+        verify(appService).getAppVO(app);
+    }
+
+    /**
+     * 非创建者即使知道应用 id，也不能通过个人详情接口读取应用内容。
+     */
+    @Test
+    void getMyAppRejectsAnotherUser() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        long appId = 2002L;
+        App app = App.builder().id(appId).userId(1001L).build();
+        when(userService.getLoginUser(request)).thenReturn(User.builder().id(1002L).build());
+        when(appService.getById(appId)).thenReturn(app);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> controller.getMyAppVOById(appId, request)
+        );
+
+        assertEquals("只能查看自己创建的应用", exception.getMessage());
+        verify(appService, never()).getAppVO(app);
+    }
+
+    /**
+     * 个人应用列表必须忽略客户端传入的 userId，并强制使用当前登录用户的 id。
+     */
+    @Test
+    void listMyAppsAlwaysUsesLoginUserId() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        AppQueryRequest queryRequest = new AppQueryRequest();
+        queryRequest.setPageNum(1);
+        queryRequest.setPageSize(9);
+        queryRequest.setUserId(9999L);
+        QueryWrapper queryWrapper = mock(QueryWrapper.class);
+        Page<App> appPage = Page.of(1, 9);
+        appPage.setRecords(List.of());
+        when(userService.getLoginUser(request)).thenReturn(User.builder().id(1001L).build());
+        when(appService.getQueryWrapper(any(AppQueryRequest.class))).thenReturn(queryWrapper);
+        when(appService.page(
+                org.mockito.ArgumentMatchers.<Page<App>>any(),
+                same(queryWrapper)
+        )).thenReturn(appPage);
+        when(appService.getAppVOList(appPage.getRecords())).thenReturn(List.of());
+
+        controller.listMyAppVOByPage(queryRequest, request);
+
+        ArgumentCaptor<AppQueryRequest> queryCaptor =
+                ArgumentCaptor.forClass(AppQueryRequest.class);
+        verify(appService).getQueryWrapper(queryCaptor.capture());
+        assertEquals(1001L, queryCaptor.getValue().getUserId());
+    }
+
+    /**
+     * 创建者删除自己的应用时，控制器应执行逻辑删除并返回成功结果。
+     */
+    @Test
+    void deleteAppAllowsOwner() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        long appId = 2003L;
+        long userId = 1001L;
+        DeleteRequest deleteRequest = new DeleteRequest();
+        deleteRequest.setId(appId);
+        when(userService.getLoginUser(request)).thenReturn(User.builder().id(userId).build());
+        when(appService.getById(appId)).thenReturn(
+                App.builder().id(appId).userId(userId).build()
+        );
+        when(appService.removeById(appId)).thenReturn(true);
+
+        Boolean deleted = controller.deleteApp(deleteRequest, request).getData();
+
+        assertTrue(deleted);
+        verify(appService).removeById(appId);
+    }
+
+    /**
+     * 普通用户不能删除其他用户的应用，权限失败后也不能执行删除操作。
+     */
+    @Test
+    void deleteAppRejectsAnotherUser() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        long appId = 2004L;
+        DeleteRequest deleteRequest = new DeleteRequest();
+        deleteRequest.setId(appId);
+        when(userService.getLoginUser(request)).thenReturn(User.builder()
+                .id(1002L)
+                .userRole("user")
+                .build());
+        when(appService.getById(appId)).thenReturn(
+                App.builder().id(appId).userId(1001L).build()
+        );
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> controller.deleteApp(deleteRequest, request)
+        );
+
+        assertEquals("只能删除自己创建的应用", exception.getMessage());
+        verify(appService, never()).removeById(appId);
+    }
 
     /**
      * 接口必须使用约定的 GET 路径和 SSE 响应类型，浏览器才能通过 EventSource 对接。

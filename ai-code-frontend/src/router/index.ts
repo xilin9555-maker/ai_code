@@ -42,10 +42,10 @@ export const routes: AppRouteRecord[] = [
     meta: { title: '编辑应用', hideInMenu: true, access: ACCESS_ENUM.USER },
   },
   {
-    path: '/about',
-    name: 'about',
-    component: () => import('@/pages/AboutPage.vue'),
-    meta: { title: '关于灵构', inMenu: true },
+    path: '/my-apps',
+    name: 'my-apps',
+    component: () => import('@/pages/MyAppsPage.vue'),
+    meta: { title: '我的应用', inMenu: true, access: ACCESS_ENUM.USER },
   },
   {
     path: '/user/login',
