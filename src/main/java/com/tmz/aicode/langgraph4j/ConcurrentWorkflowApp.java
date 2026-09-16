@@ -77,7 +77,9 @@ public class ConcurrentWorkflowApp {
                     .addNode(IMAGE_PLAN, ImagePlanNode.create())
                     .addNode(PROMPT_ENHANCER, PromptEnhancerNode.create())
                     .addNode(ROUTER, RouterNode.create())
-                    .addNode(CODE_GENERATOR, CodeGeneratorNode.create())
+                    // 构建由质量检查后的独立节点负责，代码生成阶段不重复执行 npm 命令。
+                    .addNode(CODE_GENERATOR, CodeGeneratorNode.create(ignored -> {
+                    }))
                     .addNode(CODE_QUALITY_CHECK, CodeQualityCheckNode.create())
                     .addNode(PROJECT_BUILDER, ProjectBuilderNode.create())
 

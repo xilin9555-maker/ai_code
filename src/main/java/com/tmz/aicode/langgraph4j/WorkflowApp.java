@@ -4,6 +4,7 @@ import cn.hutool.core.thread.ExecutorBuilder;
 import cn.hutool.core.thread.ThreadFactoryBuilder;
 import cn.hutool.json.JSONUtil;
 import com.tmz.aicode.ai.model.message.AiResponseMessage;
+import com.tmz.aicode.ai.model.message.BuildProgressMessage;
 import com.tmz.aicode.langgraph4j.model.QualityResult;
 import com.tmz.aicode.langgraph4j.node.CodeGeneratorNode;
 import com.tmz.aicode.langgraph4j.node.CodeQualityCheckNode;
@@ -17,6 +18,7 @@ import com.tmz.aicode.langgraph4j.node.concurrent.ImageAggregatorNode;
 import com.tmz.aicode.langgraph4j.node.concurrent.ImagePlanNode;
 import com.tmz.aicode.langgraph4j.node.concurrent.LogoCollectorNode;
 import com.tmz.aicode.langgraph4j.state.WorkflowContext;
+import com.tmz.aicode.model.dto.build.BuildProgress;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import lombok.extern.slf4j.Slf4j;
 import org.bsc.langgraph4j.CompiledGraph;
@@ -100,6 +102,7 @@ public final class WorkflowApp {
             throws GraphStateException {
         return createWorkflow(ignored -> {
         }, ignored -> {
+        }, ignored -> {
         });
     }
 
@@ -113,6 +116,7 @@ public final class WorkflowApp {
     public static CompiledGraph<MessagesState<String>> createWorkflow(
             Consumer<String> codeOutputConsumer) throws GraphStateException {
         return createWorkflow(codeOutputConsumer, ignored -> {
+        }, ignored -> {
         });
     }
 
@@ -130,6 +134,23 @@ public final class WorkflowApp {
     public static CompiledGraph<MessagesState<String>> createWorkflow(
             Consumer<String> codeOutputConsumer,
             Consumer<String> progressOutputConsumer) throws GraphStateException {
+        return createWorkflow(codeOutputConsumer, progressOutputConsumer, ignored -> {
+        });
+    }
+
+    /**
+     * 创建同时支持代码片段、节点进度和 Vue 构建进度的工作流。
+     *
+     * @param codeOutputConsumer 模型与工具产生的原始消息接收器
+     * @param progressOutputConsumer 工作节点状态接收器
+     * @param buildProgressConsumer Vue 构建阶段接收器
+     * @return 可以流式执行并报告全部进度的工作流
+     * @throws GraphStateException 节点或边定义不合法时抛出
+     */
+    public static CompiledGraph<MessagesState<String>> createWorkflow(
+            Consumer<String> codeOutputConsumer,
+            Consumer<String> progressOutputConsumer,
+            Consumer<BuildProgress> buildProgressConsumer) throws GraphStateException {
         // 未编译子图会直接合并到父图，并与父图完全共享 WorkflowContext 状态。
         StateGraph<MessagesState<String>> contentImageSubgraph =
                 createContentImageSubgraph(progressOutputConsumer);
@@ -164,7 +185,7 @@ public final class WorkflowApp {
                         progressOutputConsumer))
                 .addNode(PROJECT_BUILDER, withProgress(
                         ProjectBuilderNode.STEP_NAME,
-                        ProjectBuilderNode.create(),
+                        ProjectBuilderNode.create(buildProgressConsumer),
                         progressOutputConsumer))
 
                 // 直接添加未编译子图，使子图节点完全合并到父图并共享全部状态。
@@ -484,8 +505,17 @@ public final class WorkflowApp {
                 };
                 Consumer<String> progressOutputConsumer = message ->
                         emitCompatibleProgress(sink, generationType, message);
+                Consumer<BuildProgress> buildProgressConsumer = progress -> {
+                    if (!sink.isCancelled()) {
+                        sink.next(JSONUtil.toJsonStr(new BuildProgressMessage(progress)));
+                    }
+                };
                 CompiledGraph<MessagesState<String>> workflow =
-                        createWorkflow(codeOutputConsumer, progressOutputConsumer);
+                        createWorkflow(
+                                codeOutputConsumer,
+                                progressOutputConsumer,
+                                buildProgressConsumer
+                        );
                 WorkflowContext initialContext = createInitialContext(
                         originalPrompt, appId, generationType);
 

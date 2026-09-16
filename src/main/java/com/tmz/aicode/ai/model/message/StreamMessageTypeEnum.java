@@ -23,7 +23,12 @@ public enum StreamMessageTypeEnum {
     /**
      * 工具已经执行结束，消息中包含完整参数和执行结果。
      */
-    TOOL_EXECUTED("tool_executed", "工具执行结果");
+    TOOL_EXECUTED("tool_executed", "工具执行结果"),
+
+    /**
+     * Vue 源码生成结束后的项目构建进度。
+     */
+    BUILD_PROGRESS("build_progress", "项目构建进度");
 
     /**
      * 提供给程序和前端判断的稳定标识。

@@ -4,24 +4,23 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.tmz.aicode.ai.model.message.AiResponseMessage;
+import com.tmz.aicode.ai.model.message.BuildProgressMessage;
 import com.tmz.aicode.ai.model.message.StreamMessage;
 import com.tmz.aicode.ai.model.message.StreamMessageTypeEnum;
 import com.tmz.aicode.ai.model.message.ToolExecutedMessage;
 import com.tmz.aicode.ai.model.message.ToolRequestMessage;
 import com.tmz.aicode.ai.tools.BaseTool;
 import com.tmz.aicode.ai.tools.ToolManager;
-import com.tmz.aicode.constant.AppConstant;
-import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.exception.ErrorCode;
 import com.tmz.aicode.exception.ThrowUtils;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.enums.ChatHistoryMessageTypeEnum;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import com.tmz.aicode.service.ChatHistoryService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
-import java.io.File;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -35,18 +34,14 @@ import java.util.Set;
 @Component
 public class JsonMessageStreamHandler {
 
-    private final VueProjectBuilder vueProjectBuilder;
     private final ToolManager toolManager;
 
     /**
-     * 注入 Vue 项目构建器，在工程源码生成完整后启动后台构建。
+     * 注入工具管理器，用于把工具调用转换成适合前端和历史记录展示的内容。
      *
-     * @param vueProjectBuilder 负责安装依赖并生成 dist 目录的构建器
      * @param toolManager 负责查找工具及其对应的展示策略
      */
-    public JsonMessageStreamHandler(VueProjectBuilder vueProjectBuilder,
-                                    ToolManager toolManager) {
-        this.vueProjectBuilder = vueProjectBuilder;
+    public JsonMessageStreamHandler(ToolManager toolManager) {
         this.toolManager = toolManager;
     }
 
@@ -61,50 +56,32 @@ public class JsonMessageStreamHandler {
      * @param chatHistoryService 对话历史服务
      * @param appId 当前应用 id
      * @param loginUser 发起生成的登录用户
-     * @return 已转换为可展示文本的响应流
+     * @return 普通回复与构建进度组成的结构化响应流
      */
-    public Flux<String> handle(Flux<String> originFlux,
-                               ChatHistoryService chatHistoryService,
-                               long appId,
-                               User loginUser) {
-        return handle(originFlux, chatHistoryService, appId, loginUser, true);
-    }
-
-    /**
-     * 解析统一消息，并按调用方选择决定是否在流结束后启动构建。
-     *
-     * 普通模式由该处理器启动异步构建；AI 工作流包含独立的项目构建节点，因此只保存
-     * 回复，不重复安装依赖和执行构建。
-     *
-     * @param originFlux 门面或工作流输出的统一 JSON 消息流
-     * @param chatHistoryService 对话历史服务
-     * @param appId 当前应用 id
-     * @param loginUser 发起生成的登录用户
-     * @param buildAfterComplete 流结束后是否启动异步构建
-     * @return 已转换为可展示文本的响应流
-     */
-    public Flux<String> handle(Flux<String> originFlux,
-                               ChatHistoryService chatHistoryService,
-                               long appId,
-                               User loginUser,
-                               boolean buildAfterComplete) {
+    public Flux<GenerationStreamEvent> handle(Flux<String> originFlux,
+                                              ChatHistoryService chatHistoryService,
+                                              long appId,
+                                              User loginUser) {
         return Flux.defer(() -> {
             StringBuilder chatHistoryBuilder = new StringBuilder();
             Set<String> seenToolRequestIds = new HashSet<>();
             return originFlux
-                    .map(chunk -> handleJsonMessageChunk(
-                            chunk,
-                            chatHistoryBuilder,
-                            seenToolRequestIds
-                    ))
-                    // 只过滤当前片段没有产生可展示增量的情况。
-                    .filter(StrUtil::isNotEmpty)
+                    .<GenerationStreamEvent>handle((chunk, sink) -> {
+                        GenerationStreamEvent event = handleJsonMessageChunk(
+                                chunk,
+                                chatHistoryBuilder,
+                                seenToolRequestIds
+                        );
+                        // 重复工具参数片段没有展示增量，不能向 Reactor 的 map 返回 null。
+                        if (event != null) {
+                            sink.next(event);
+                        }
+                    })
                     .doOnComplete(() -> handleCompletedResponse(
                             chatHistoryService,
                             appId,
                             loginUser,
-                            chatHistoryBuilder,
-                            buildAfterComplete
+                            chatHistoryBuilder
                     ))
                     .doOnError(error -> saveFailureResponse(
                             chatHistoryService,
@@ -116,26 +93,21 @@ public class JsonMessageStreamHandler {
     }
 
     /**
-     * 流正常结束后保存完整回复，并启动当前 Vue 工程的后台构建。
+     * 流正常结束后保存完整回复。
      *
-     * 文件写入工具只有在流完成时才确定全部调用已经结束，因此这里是开始构建最早且可靠
-     * 的时机。构建器在虚拟线程中工作，本方法不会等待 npm 命令执行完毕。
+     * Vue 工程构建已经移动到模型完成回调或工作流构建节点；能够进入这里说明构建也已
+     * 成功，因此该处理器只负责保存对话，避免在完成信号之后重复启动后台构建。
      */
     private void handleCompletedResponse(ChatHistoryService chatHistoryService,
                                          long appId,
                                          User loginUser,
-                                         StringBuilder chatHistoryBuilder,
-                                         boolean buildAfterComplete) {
+                                         StringBuilder chatHistoryBuilder) {
         saveCompletedResponse(
                 chatHistoryService,
                 appId,
                 loginUser.getId(),
                 chatHistoryBuilder.toString()
         );
-        if (buildAfterComplete) {
-            File projectDir = new File(AppConstant.CODE_OUTPUT_ROOT_DIR, "vue_project_" + appId);
-            vueProjectBuilder.buildProjectAsync(projectDir.getAbsolutePath());
-        }
     }
 
     /**
@@ -144,21 +116,33 @@ public class JsonMessageStreamHandler {
      * AI 文本会直接进入前端和历史记录；工具请求输出一次中文选择提示；工具完成消息
      * 根据具体工具生成参数详情，同时把相同内容写入历史记录。
      */
-    private String handleJsonMessageChunk(String chunk,
-                                          StringBuilder chatHistoryBuilder,
-                                          Set<String> seenToolRequestIds) {
+    private GenerationStreamEvent handleJsonMessageChunk(
+            String chunk,
+            StringBuilder chatHistoryBuilder,
+            Set<String> seenToolRequestIds) {
         StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
         StreamMessageTypeEnum type = StreamMessageTypeEnum.getEnumByValue(streamMessage.getType());
         if (type == null) {
             log.warn("收到无法识别的流式消息类型：{}", streamMessage.getType());
-            return "";
+            return null;
         }
 
-        return switch (type) {
+        if (type == StreamMessageTypeEnum.BUILD_PROGRESS) {
+            BuildProgressMessage message = JSONUtil.toBean(chunk, BuildProgressMessage.class);
+            if (message.getData() == null) {
+                log.warn("收到缺少 data 的构建进度消息");
+                return null;
+            }
+            return GenerationStreamEvent.build(message.getData());
+        }
+
+        String content = switch (type) {
             case AI_RESPONSE -> handleAiResponse(chunk, chatHistoryBuilder);
             case TOOL_REQUEST -> handleToolRequest(chunk, seenToolRequestIds);
             case TOOL_EXECUTED -> handleToolExecuted(chunk, chatHistoryBuilder);
+            case BUILD_PROGRESS -> "";
         };
+        return StrUtil.isEmpty(content) ? null : GenerationStreamEvent.message(content);
     }
 
     /**

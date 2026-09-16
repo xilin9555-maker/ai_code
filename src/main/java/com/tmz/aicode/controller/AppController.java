@@ -7,6 +7,7 @@ import com.tmz.aicode.annotation.AuthCheck;
 import com.tmz.aicode.common.BaseResponse;
 import com.tmz.aicode.common.DeleteRequest;
 import com.tmz.aicode.common.ResultUtils;
+import com.tmz.aicode.config.RedisCacheManagerConfig;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.constant.UserConstant;
 import com.tmz.aicode.exception.BusinessException;
@@ -21,11 +22,13 @@ import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.ProjectDownloadService;
 import com.tmz.aicode.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -41,6 +44,7 @@ import reactor.core.publisher.Mono;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -222,6 +226,11 @@ public class AppController {
      * @return 精选应用分页结果
      */
     @PostMapping("/good/list/page/vo")
+    @Cacheable(
+            cacheNames = RedisCacheManagerConfig.GOOD_APP_PAGE_CACHE,
+            key = "T(com.tmz.aicode.utils.CacheKeyUtils).generateKey(#appQueryRequest)",
+            condition = "#appQueryRequest != null && #appQueryRequest.pageNum <= 10"
+    )
     public BaseResponse<Page<AppVO>> listGoodAppVOByPage(
             @RequestBody AppQueryRequest appQueryRequest) {
         validateUserPageRequest(appQueryRequest);
@@ -242,11 +251,10 @@ public class AppController {
      * @param message 用户本次提交的网站需求
      * @param agent 是否使用 AI 工作流模式
      * @param request 当前 HTTP 请求，用于读取 Session 中的登录用户
-     * 每个普通事件都把代码片段放入 JSON 的 d 字段。代码中的行首空格会因此成为 JSON
-     * 字符串内容，不会被 SSE 协议当作 data 字段的格式空格消费。生成流正常结束后还会发送
-     * done 事件，前端收到它便能确认代码已经完整生成；如果上游异常，done 事件不会发出。
+     * 普通事件把回复片段放入 JSON 的 d 字段，构建阶段使用具名事件携带结构化进度。
+     * 生成流正常结束后发送 done，前端此时才能刷新预览；如果上游异常则只发送错误事件。
      *
-     * @return 依次包含代码片段的消息事件，以及正常结束时的 done 事件
+     * @return 回复、构建进度、心跳，以及正常结束时的 done 事件
      */
     @GetMapping(value = "/chat/gen/code",
             produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
@@ -268,16 +276,19 @@ public class AppController {
 
         // 登录用户从服务端 Session 中取得，客户端不能通过请求参数伪造用户身份。
         User loginUser = userService.getLoginUser(request);
-        Flux<String> contentFlux = appService.chatToGenCode(
+        Flux<GenerationStreamEvent> contentFlux = appService.chatToGenCode(
                 appId, message, loginUser, agent);
 
-        Flux<ServerSentEvent<String>> responseFlux = contentFlux
-                .map(chunk -> {
-                    // JSON 会保护代码片段内部的空格、换行和引号，前端读取 d 字段即可还原原文。
-                    String jsonData = JSONUtil.toJsonStr(Map.of("d", chunk));
-                    return ServerSentEvent.<String>builder()
-                            .data(jsonData)
-                            .build();
+        Flux<ServerSentEvent<String>> businessFlux = contentFlux
+                .map(streamEvent -> {
+                    String jsonData = JSONUtil.toJsonStr(streamEvent.getData());
+                    ServerSentEvent.Builder<String> builder =
+                            ServerSentEvent.<String>builder().data(jsonData);
+                    // 普通消息不指定 event，继续由 EventSource.onmessage 接收。
+                    if (!GenerationStreamEvent.MESSAGE_EVENT.equals(streamEvent.getEvent())) {
+                        builder.event(streamEvent.getEvent());
+                    }
+                    return builder.build();
                 })
                 .concatWith(Mono.just(
                         // concatWith 只会在代码流正常完成后执行，因此 done 可以作为成功结束标志。
@@ -287,7 +298,7 @@ public class AppController {
                                 .data("{\"completed\":true}")
                                 .build()
                 ));
-        return responseFlux.onErrorResume(error -> {
+        businessFlux = businessFlux.onErrorResume(error -> {
             /*
              * SSE 响应开始后不能再交给全局 JSON 异常处理器，否则会因为响应类型不兼容
              * 产生第二个异常。改为具名事件后，前端既能展示失败原因，也不会误收 done。
@@ -303,6 +314,19 @@ public class AppController {
                     .event("generation_error")
                     .data(errorData)
                     .build());
+        });
+
+        /*
+         * 模型生成和 npm 构建都可能较久没有业务片段。定时注释不会触发前端消息事件，
+         * 但能让浏览器、网关和反向代理知道连接仍然存活。业务流结束后心跳也立即停止。
+         */
+        return businessFlux.publish(shared -> {
+            Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(15))
+                    .map(sequence -> ServerSentEvent.<String>builder()
+                            .comment("keep-alive")
+                            .build())
+                    .takeUntilOther(shared.ignoreElements());
+            return Flux.merge(shared, heartbeat);
         });
     }
 

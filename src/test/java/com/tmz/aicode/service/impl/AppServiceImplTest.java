@@ -17,6 +17,7 @@ import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import com.tmz.aicode.model.vo.UserVO;
 import com.tmz.aicode.mq.ScreenshotTaskProducer;
 import com.tmz.aicode.service.ChatHistoryService;
@@ -338,6 +339,7 @@ class AppServiceImplTest {
                         " 生成任务管理网站 ",
                         loginUser
                 )
+                .map(AppServiceImplTest::messageContent)
                 .collectList()
                 .block();
 
@@ -406,6 +408,7 @@ class AppServiceImplTest {
                             loginUser,
                             true
                     )
+                    .map(AppServiceImplTest::messageContent)
                     .collectList()
                     .block();
 
@@ -557,9 +560,13 @@ class AppServiceImplTest {
     private static StreamHandlerExecutor createStreamHandlerExecutor() {
         return new StreamHandlerExecutor(
                 new JsonMessageStreamHandler(
-                        mock(VueProjectBuilder.class),
                         mock(ToolManager.class)
                 )
         );
+    }
+
+    /** 读取普通生成事件中的文本，保持业务断言聚焦于内容本身。 */
+    private static String messageContent(GenerationStreamEvent event) {
+        return String.valueOf(((java.util.Map<?, ?>) event.getData()).get("d"));
     }
 }

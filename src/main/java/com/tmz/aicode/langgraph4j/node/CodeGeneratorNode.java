@@ -44,7 +44,7 @@ public final class CodeGeneratorNode {
      */
     public static AsyncNodeAction<MessagesState<String>> create() {
         return create(ignored -> {
-        });
+        }, true);
     }
 
     /**
@@ -55,6 +55,22 @@ public final class CodeGeneratorNode {
      */
     public static AsyncNodeAction<MessagesState<String>> create(
             Consumer<String> outputConsumer) {
+        return create(outputConsumer, false);
+    }
+
+    /**
+     * 创建代码生成节点，并明确本节点是否负责立即构建 Vue 工程。
+     *
+     * 带有独立项目构建节点的完整工作流传入 false，先完成质量检查再构建；单独运行该
+     * 节点时可以传入 true，使生成流结束前直接得到可预览产物。
+     *
+     * @param outputConsumer 代码流接收器
+     * @param buildVueProject 是否在代码生成节点内构建 Vue 工程
+     * @return 可注册到工作流图的异步节点
+     */
+    public static AsyncNodeAction<MessagesState<String>> create(
+            Consumer<String> outputConsumer,
+            boolean buildVueProject) {
         Objects.requireNonNull(outputConsumer, "代码输出接收器不能为空");
         return node_async(state -> {
             WorkflowContext context = requireContext(state);
@@ -74,7 +90,7 @@ public final class CodeGeneratorNode {
 
             // 订阅代码流并等待完成，保证文件保存结束后再进入项目构建节点。
             Flux<String> codeStream = codeGeneratorFacade.generateAndSaveCodeStream(
-                    userMessage, generationType, appId);
+                    userMessage, generationType, appId, buildVueProject);
             codeStream
                     // 复用原有代码流，使聊天页能够继续展示模型文本和文件工具执行结果。
                     .doOnNext(outputConsumer)

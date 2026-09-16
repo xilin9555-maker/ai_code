@@ -5,12 +5,15 @@ import cn.hutool.json.JSONUtil;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.tmz.aicode.common.DeleteRequest;
+import com.tmz.aicode.config.RedisCacheManagerConfig;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.model.dto.app.AppQueryRequest;
+import com.tmz.aicode.model.dto.build.BuildProgress;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.vo.AppVO;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.ProjectDownloadService;
 import com.tmz.aicode.service.UserService;
@@ -18,6 +21,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -58,6 +62,32 @@ import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standal
  * 流式内容由模拟服务直接提供，测试不会连接数据库或请求模型。
  */
 class AppControllerTest {
+
+    /**
+     * 精选应用接口只缓存前十页，并根据完整查询参数生成独立缓存 Key。
+     */
+    @Test
+    void goodAppEndpointDeclaresConditionalCache() throws NoSuchMethodException {
+        Method method = AppController.class.getMethod(
+                "listGoodAppVOByPage",
+                AppQueryRequest.class
+        );
+
+        Cacheable cacheable = method.getAnnotation(Cacheable.class);
+
+        assertArrayEquals(
+                new String[]{RedisCacheManagerConfig.GOOD_APP_PAGE_CACHE},
+                cacheable.cacheNames()
+        );
+        assertEquals(
+                "T(com.tmz.aicode.utils.CacheKeyUtils).generateKey(#appQueryRequest)",
+                cacheable.key()
+        );
+        assertEquals(
+                "#appQueryRequest != null && #appQueryRequest.pageNum <= 10",
+                cacheable.condition()
+        );
+    }
 
     /**
      * 当前用户读取自己创建的应用时，控制器应返回服务层组装后的详情。
@@ -252,7 +282,10 @@ class AppControllerTest {
         User loginUser = User.builder().id(1001L).build();
         when(userService.getLoginUser(request)).thenReturn(loginUser);
         when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser, true))
-                .thenReturn(Flux.just("  第一段\n", "第二段"));
+                .thenReturn(Flux.just(
+                        GenerationStreamEvent.message("  第一段\n"),
+                        GenerationStreamEvent.message("第二段")
+                ));
 
         List<ServerSentEvent<String>> events = controller.chatToGenCode(
                         2001L,
@@ -276,6 +309,38 @@ class AppControllerTest {
         verify(appService).chatToGenCode(2001L, "生成任务管理网站", loginUser, true);
     }
 
+    /** 构建进度应保持自己的 SSE 名称和结构，结束后再发送 done。 */
+    @Test
+    void chatToGenCodeKeepsNamedBuildProgressEvent() {
+        AppService appService = mock(AppService.class);
+        UserService userService = mock(UserService.class);
+        AppController controller = new AppController(
+                appService,
+                userService,
+                mock(ProjectDownloadService.class)
+        );
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        User loginUser = User.builder().id(1001L).build();
+        BuildProgress progress = BuildProgress.running(
+                "compile_assets", 60, "正在编译项目资源");
+        when(userService.getLoginUser(request)).thenReturn(loginUser);
+        when(appService.chatToGenCode(2001L, "生成 Vue 项目", loginUser, false))
+                .thenReturn(Flux.just(GenerationStreamEvent.build(progress)));
+
+        List<ServerSentEvent<String>> events = controller.chatToGenCode(
+                        2001L, "生成 Vue 项目", false, request, response)
+                .collectList()
+                .block();
+
+        assertEquals(2, events.size());
+        assertEquals(BuildProgress.EVENT_BUILD_PROGRESS, events.getFirst().event());
+        assertEquals("compile_assets", JSONUtil.parseObj(
+                events.getFirst().data()).getStr("stage"));
+        assertEquals(60, JSONUtil.parseObj(events.getFirst().data()).getInt("percent"));
+        assertEquals("done", events.getLast().event());
+    }
+
     /**
      * 通过 Spring MVC 的真实返回值处理链验证 SSE 文本格式，而不只检查 Java 对象。
      * 模拟服务直接发出两个固定片段，因此不会连接数据库或调用大模型。
@@ -293,7 +358,10 @@ class AppControllerTest {
         when(userService.getLoginUser(org.mockito.ArgumentMatchers.any(HttpServletRequest.class)))
                 .thenReturn(loginUser);
         when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser, false))
-                .thenReturn(Flux.just("chunk-1", "chunk-2"));
+                .thenReturn(Flux.just(
+                        GenerationStreamEvent.message("chunk-1"),
+                        GenerationStreamEvent.message("chunk-2")
+                ));
 
         MockMvc mockMvc = standaloneSetup(controller).build();
         MvcResult pendingResult = mockMvc
@@ -336,7 +404,7 @@ class AppControllerTest {
         when(userService.getLoginUser(request)).thenReturn(loginUser);
         when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser, false))
                 .thenReturn(Flux.concat(
-                        Flux.just("已生成片段"),
+                        Flux.just(GenerationStreamEvent.message("已生成片段")),
                         Flux.error(new IllegalStateException("生成中断"))
                 ));
 

@@ -36,6 +36,14 @@ type ChatMessage = {
   streaming?: boolean
 }
 
+type BuildProgressPayload = {
+  event: 'build_start' | 'build_progress' | 'build_complete'
+  stage: string
+  status: 'running' | 'success' | 'failed'
+  percent: number
+  message: string
+}
+
 const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
@@ -62,6 +70,7 @@ const messageList = ref<HTMLElement>()
 const isEditMode = ref(false)
 const selectedElementInfo = ref<ElementInfo>()
 const agentMode = ref(false)
+const buildProgress = ref<BuildProgressPayload>()
 let eventSource: EventSource | undefined
 let streamRenderTimer: number | undefined
 let messageSequence = 0
@@ -373,8 +382,8 @@ function isMessageListNearBottom() {
 
 /**
  * 使用原生 EventSource 接收服务端的 text/event-stream 响应。
- * 普通消息的 d 字段是一个代码片段，收到 done 事件后说明后端已经解析并保存完整文件，
- * 这时刷新右侧 iframe 就能看到刚生成的网站。
+ * 普通消息的 d 字段是一个代码片段。对于 Vue 工程，收到 done 事件代表后端不仅写完
+ * 源码，也已经同步生成最新 dist，此时刷新右侧 iframe 不会再读到旧构建产物。
  */
 async function generateCode(text = userMessage.value) {
   const content = text.trim()
@@ -385,6 +394,7 @@ async function generateCode(text = userMessage.value) {
   const requestUsesAgent = agentMode.value
   userMessage.value = ''
   generating.value = true
+  buildProgress.value = undefined
   messages.value.push({ id: createLocalMessageId(), role: 'user', content: prompt })
   finishVisualEditing()
   const assistantMessageIndex = messages.value.length
@@ -460,6 +470,29 @@ async function generateCode(text = userMessage.value) {
     }
   }
 
+  /** 构建阶段使用具名事件传输，不会混入 AI 回复或被写进聊天历史。 */
+  const handleBuildProgress = (event: MessageEvent<string>) => {
+    try {
+      const payload = JSON.parse(event.data) as BuildProgressPayload
+      if (
+        typeof payload.message === 'string' &&
+        typeof payload.percent === 'number' &&
+        ['running', 'success', 'failed'].includes(payload.status)
+      ) {
+        buildProgress.value = {
+          ...payload,
+          percent: Math.min(100, Math.max(0, payload.percent)),
+        }
+      }
+    } catch {
+      // 构建进度只用于辅助展示，单个进度事件异常不应中断代码生成连接。
+    }
+  }
+
+  eventSource.addEventListener('build_start', handleBuildProgress)
+  eventSource.addEventListener('build_progress', handleBuildProgress)
+  eventSource.addEventListener('build_complete', handleBuildProgress)
+
   eventSource.addEventListener('generation_error', (event) => {
     flushPendingChunks()
     let errorMessage = '生成失败，请稍后重试'
@@ -475,6 +508,13 @@ async function generateCode(text = userMessage.value) {
     if (assistantMessage) {
       assistantMessage.content = renderedContent
       assistantMessage.streaming = false
+    }
+    if (buildProgress.value && buildProgress.value.status !== 'failed') {
+      buildProgress.value = {
+        ...buildProgress.value,
+        status: 'failed',
+        message: errorMessage,
+      }
     }
     completed = true
     closeStream()
@@ -499,7 +539,7 @@ async function generateCode(text = userMessage.value) {
     generating.value = false
     if (
       responseContainsWebsite() ||
-      (requestUsesAgent && app.value?.codeGenType === 'vue_project')
+      app.value?.codeGenType === 'vue_project'
     ) {
       previewReady.value = true
       refreshPreview()
@@ -516,6 +556,13 @@ async function generateCode(text = userMessage.value) {
     if (assistantMessage) assistantMessage.streaming = false
     closeStream()
     generating.value = false
+    if (buildProgress.value && buildProgress.value.status === 'running') {
+      buildProgress.value = {
+        ...buildProgress.value,
+        status: 'failed',
+        message: '生成连接已中断',
+      }
+    }
     if (!completed) notification.error('生成连接中断，请检查后端日志后重试')
   }
 }
@@ -795,6 +842,29 @@ onBeforeUnmount(() => {
                 <p v-else class="typing"><i /><i /><i /> 正在生成代码</p>
               </div>
             </article>
+          </div>
+
+          <div
+            v-if="buildProgress"
+            class="build-progress-card"
+            :class="`is-${buildProgress.status}`"
+          >
+            <div class="build-progress-heading">
+              <strong>{{ buildProgress.message }}</strong>
+              <span>{{ buildProgress.percent }}%</span>
+            </div>
+            <a-progress
+              :percent="buildProgress.percent"
+              :show-info="false"
+              :status="
+                buildProgress.status === 'failed'
+                  ? 'exception'
+                  : buildProgress.status === 'success' && buildProgress.percent === 100
+                    ? 'success'
+                    : 'active'
+              "
+              size="small"
+            />
           </div>
 
           <form
@@ -1235,6 +1305,37 @@ onBeforeUnmount(() => {
   padding: 14px;
   border-top: 1px solid var(--line);
   background: #faf9f5;
+}
+
+.build-progress-card {
+  margin: 0 14px 12px;
+  padding: 10px 12px 7px;
+  border: 1px solid #e4ded6;
+  border-radius: 8px;
+  background: #fffefb;
+}
+
+.build-progress-card.is-failed {
+  border-color: #efc4bc;
+  background: #fff8f6;
+}
+
+.build-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  color: #75675e;
+  font-size: 10px;
+}
+
+.build-progress-heading strong {
+  overflow: hidden;
+  color: #5d5149;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .generation-mode-row {

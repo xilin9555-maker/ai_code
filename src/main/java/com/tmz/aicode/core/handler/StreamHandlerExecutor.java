@@ -4,6 +4,7 @@ import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import com.tmz.aicode.service.ChatHistoryService;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -11,8 +12,8 @@ import reactor.core.publisher.Flux;
 /**
  * 根据代码生成类型选择对应的响应流处理器。
  *
- * HTML 和多文件模式输出普通文本，Vue 工程模式输出统一 JSON 消息。把选择逻辑集中在
- * 这里后，应用服务无需了解两种流内部的差异。
+ * HTML 和多文件模式输出普通文本，Vue 工程模式输出统一 JSON 消息。处理完成后两者都
+ * 转换为结构化响应事件，使控制器只需要处理一种稳定的数据类型。
  */
 @Component
 public class StreamHandlerExecutor {
@@ -31,34 +32,13 @@ public class StreamHandlerExecutor {
      * @param appId 当前应用 id
      * @param loginUser 发起生成的登录用户
      * @param codeGenType 当前应用的代码生成类型
-     * @return 可以直接交给 SSE 控制器的文本流
+     * @return 可以直接交给 SSE 控制器的结构化事件流
      */
-    public Flux<String> doExecute(Flux<String> originFlux,
-                                  ChatHistoryService chatHistoryService,
-                                  long appId,
-                                  User loginUser,
-                                  CodeGenTypeEnum codeGenType) {
-        return doExecute(
-                originFlux, chatHistoryService, appId, loginUser, codeGenType, true);
-    }
-
-    /**
-     * 选择流处理器，并控制 Vue 流结束后是否由处理器启动构建。
-     *
-     * @param originFlux 原始响应流
-     * @param chatHistoryService 对话历史服务
-     * @param appId 当前应用 id
-     * @param loginUser 发起生成的登录用户
-     * @param codeGenType 当前应用的代码生成类型
-     * @param buildAfterComplete Vue 流结束后是否启动异步构建
-     * @return 可以直接交给 SSE 控制器的文本流
-     */
-    public Flux<String> doExecute(Flux<String> originFlux,
-                                  ChatHistoryService chatHistoryService,
-                                  long appId,
-                                  User loginUser,
-                                  CodeGenTypeEnum codeGenType,
-                                  boolean buildAfterComplete) {
+    public Flux<GenerationStreamEvent> doExecute(Flux<String> originFlux,
+                                                 ChatHistoryService chatHistoryService,
+                                                 long appId,
+                                                 User loginUser,
+                                                 CodeGenTypeEnum codeGenType) {
         if (codeGenType == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "生成类型不能为空");
         }
@@ -67,12 +47,11 @@ public class StreamHandlerExecutor {
                     originFlux,
                     chatHistoryService,
                     appId,
-                    loginUser,
-                    buildAfterComplete
+                    loginUser
             );
-            case HTML, MULTI_FILE -> new SimpleTextStreamHandler().handle(
-                    originFlux, chatHistoryService, appId, loginUser
-            );
+            case HTML, MULTI_FILE -> new SimpleTextStreamHandler()
+                    .handle(originFlux, chatHistoryService, appId, loginUser)
+                    .map(GenerationStreamEvent::message);
         };
     }
 }

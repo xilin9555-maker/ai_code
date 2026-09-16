@@ -7,6 +7,7 @@ import com.tmz.aicode.model.dto.app.AppQueryRequest;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.vo.AppVO;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
@@ -51,9 +52,11 @@ public interface AppService extends IService<App> {
      * @param appId 需要生成代码的应用 id
      * @param message 用户本次提交的网站需求
      * @param loginUser 当前登录用户，用于校验应用所有权
-     * @return 按生成顺序持续发出的代码文本片段
+     * @return 按生成顺序持续发出的回复和构建进度事件
      */
-    default Flux<String> chatToGenCode(Long appId, String message, User loginUser) {
+    default Flux<GenerationStreamEvent> chatToGenCode(Long appId,
+                                                       String message,
+                                                       User loginUser) {
         return chatToGenCode(appId, message, loginUser, false);
     }
 
@@ -67,12 +70,12 @@ public interface AppService extends IService<App> {
      * @param message 用户本次提交的网站需求
      * @param loginUser 当前登录用户
      * @param agent 是否使用 AI 工作流模式
-     * @return 按生成顺序持续发出的文本片段
+     * @return 按生成顺序持续发出的回复和构建进度事件
      */
-    Flux<String> chatToGenCode(Long appId,
-                               String message,
-                               User loginUser,
-                               boolean agent);
+    Flux<GenerationStreamEvent> chatToGenCode(Long appId,
+                                              String message,
+                                              User loginUser,
+                                              boolean agent);
 
     /**
      * 根据请求参数构造应用查询条件。

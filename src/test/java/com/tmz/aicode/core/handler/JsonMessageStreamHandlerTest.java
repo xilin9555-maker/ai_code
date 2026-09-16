@@ -2,6 +2,7 @@ package com.tmz.aicode.core.handler;
 
 import cn.hutool.json.JSONUtil;
 import com.tmz.aicode.ai.model.message.AiResponseMessage;
+import com.tmz.aicode.ai.model.message.BuildProgressMessage;
 import com.tmz.aicode.ai.model.message.StreamMessageTypeEnum;
 import com.tmz.aicode.ai.model.message.ToolExecutedMessage;
 import com.tmz.aicode.ai.model.message.ToolRequestMessage;
@@ -12,15 +13,14 @@ import com.tmz.aicode.ai.tools.FileModifyTool;
 import com.tmz.aicode.ai.tools.FileReadTool;
 import com.tmz.aicode.ai.tools.FileWriteTool;
 import com.tmz.aicode.ai.tools.ToolManager;
-import com.tmz.aicode.constant.AppConstant;
-import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.model.entity.User;
+import com.tmz.aicode.model.dto.build.BuildProgress;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import com.tmz.aicode.service.ChatHistoryService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
 
-import java.io.File;
 import java.util.List;
 import java.util.Map;
 
@@ -46,7 +46,6 @@ class JsonMessageStreamHandlerTest {
         long userId = 1001L;
         User loginUser = User.builder().id(userId).build();
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
-        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         when(chatHistoryService.addChatMessage(
                 eq(appId),
                 org.mockito.ArgumentMatchers.anyString(),
@@ -85,9 +84,9 @@ class JsonMessageStreamHandlerTest {
                 JSONUtil.toJsonStr(new AiResponseMessage("工程生成完成。"))
         );
 
-        List<String> output = new JsonMessageStreamHandler(
-                vueProjectBuilder, createToolManager())
+        List<String> output = new JsonMessageStreamHandler(createToolManager())
                 .handle(originFlux, chatHistoryService, appId, loginUser)
+                .map(this::messageContent)
                 .collectList()
                 .block();
 
@@ -116,10 +115,6 @@ class JsonMessageStreamHandlerTest {
         assertTrue(savedHistory.startsWith("开始生成工程。"));
         assertTrue(savedHistory.contains("[工具调用] 写入文件 src/App.vue"));
         assertTrue(savedHistory.endsWith("工程生成完成。"));
-        verify(vueProjectBuilder).buildProjectAsync(new File(
-                AppConstant.CODE_OUTPUT_ROOT_DIR,
-                "vue_project_" + appId
-        ).getAbsolutePath());
     }
 
     /** 并行工具按调用 id 分别提示，完整执行信息需要形成彼此独立的代码块。 */
@@ -129,7 +124,6 @@ class JsonMessageStreamHandlerTest {
         long userId = 1002L;
         User loginUser = User.builder().id(userId).build();
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
-        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         when(chatHistoryService.addChatMessage(
                 eq(appId),
                 org.mockito.ArgumentMatchers.anyString(),
@@ -155,9 +149,9 @@ class JsonMessageStreamHandlerTest {
                 JSONUtil.toJsonStr(new AiResponseMessage("工程生成完成。"))
         );
 
-        List<String> output = new JsonMessageStreamHandler(
-                vueProjectBuilder, createToolManager())
+        List<String> output = new JsonMessageStreamHandler(createToolManager())
                 .handle(originFlux, chatHistoryService, appId, loginUser)
+                .map(this::messageContent)
                 .collectList()
                 .block();
 
@@ -189,7 +183,6 @@ class JsonMessageStreamHandlerTest {
         long userId = 1003L;
         User loginUser = User.builder().id(userId).build();
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
-        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         when(chatHistoryService.addChatMessage(
                 eq(appId),
                 org.mockito.ArgumentMatchers.anyString(),
@@ -213,12 +206,12 @@ class JsonMessageStreamHandlerTest {
         )));
         executedMessage.setResult("文件修改成功：src/App.vue");
 
-        List<String> output = new JsonMessageStreamHandler(
-                vueProjectBuilder, createToolManager())
+        List<String> output = new JsonMessageStreamHandler(createToolManager())
                 .handle(Flux.just(
                         JSONUtil.toJsonStr(requestMessage),
                         JSONUtil.toJsonStr(executedMessage)
                 ), chatHistoryService, appId, loginUser)
+                .map(this::messageContent)
                 .collectList()
                 .block();
 
@@ -241,14 +234,13 @@ class JsonMessageStreamHandlerTest {
         assertTrue(historyCaptor.getValue().contains("替换后："));
     }
 
-    /** 工作流已经包含构建节点时，流处理器只保存回复，不能再次启动异步构建。 */
+    /** 流处理器在完成时只保存回复，项目构建由上游生成流程负责。 */
     @Test
-    void skipsDuplicateBuildForWorkflowMode() {
+    void completedStreamOnlySavesChatHistory() {
         long appId = 3004L;
         long userId = 1004L;
         User loginUser = User.builder().id(userId).build();
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
-        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
         when(chatHistoryService.addChatMessage(
                 eq(appId),
                 org.mockito.ArgumentMatchers.anyString(),
@@ -256,23 +248,47 @@ class JsonMessageStreamHandlerTest {
                 eq(userId)
         )).thenReturn(true);
 
-        List<String> output = new JsonMessageStreamHandler(
-                vueProjectBuilder, createToolManager())
+        List<String> output = new JsonMessageStreamHandler(createToolManager())
                 .handle(
                         Flux.just(JSONUtil.toJsonStr(
                                 new AiResponseMessage("工作流处理完成。"))),
                         chatHistoryService,
                         appId,
-                        loginUser,
-                        false
+                        loginUser
                 )
+                .map(this::messageContent)
                 .collectList()
                 .block();
 
         assertEquals(List.of("工作流处理完成。"), output);
         verify(chatHistoryService).addChatMessage(
                 appId, "工作流处理完成。", "ai", userId);
-        verifyNoInteractions(vueProjectBuilder);
+    }
+
+    /** 构建进度应成为具名事件，并且不能写入 AI 对话历史。 */
+    @Test
+    void convertsBuildProgressToNamedEventWithoutSavingHistory() {
+        long appId = 3005L;
+        User loginUser = User.builder().id(1005L).build();
+        ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
+        BuildProgress progress = BuildProgress.running(
+                "compile_assets", 60, "正在编译项目资源");
+
+        List<GenerationStreamEvent> output = new JsonMessageStreamHandler(createToolManager())
+                .handle(
+                        Flux.just(JSONUtil.toJsonStr(new BuildProgressMessage(progress))),
+                        chatHistoryService,
+                        appId,
+                        loginUser
+                )
+                .collectList()
+                .block();
+
+        assertNotNull(output);
+        assertEquals(1, output.size());
+        assertEquals(BuildProgress.EVENT_BUILD_PROGRESS, output.getFirst().getEvent());
+        assertEquals(progress, output.getFirst().getData());
+        verifyNoInteractions(chatHistoryService);
     }
 
     /**
@@ -326,5 +342,11 @@ class JsonMessageStreamHandlerTest {
             index += target.length();
         }
         return count;
+    }
+
+    /** 读取普通消息中的 d 字段，便于复用原有文本断言。 */
+    private String messageContent(GenerationStreamEvent event) {
+        assertEquals(GenerationStreamEvent.MESSAGE_EVENT, event.getEvent());
+        return String.valueOf(((Map<?, ?>) event.getData()).get("d"));
     }
 }

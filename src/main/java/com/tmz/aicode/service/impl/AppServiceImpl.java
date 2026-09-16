@@ -25,6 +25,7 @@ import com.tmz.aicode.model.entity.User;
 import com.tmz.aicode.model.enums.ChatHistoryMessageTypeEnum;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
+import com.tmz.aicode.model.vo.GenerationStreamEvent;
 import com.tmz.aicode.model.vo.UserVO;
 import com.tmz.aicode.mq.ScreenshotTaskProducer;
 import com.tmz.aicode.service.AppService;
@@ -252,10 +253,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * “怎样调用模型、解析结果并保存文件”。这种分工避免底层生成组件依赖用户 Session。
      */
     @Override
-    public Flux<String> chatToGenCode(Long appId,
-                                      String message,
-                                      User loginUser,
-                                      boolean agent) {
+    public Flux<GenerationStreamEvent> chatToGenCode(Long appId,
+                                                     String message,
+                                                     User loginUser,
+                                                     boolean agent) {
         if (appId == null || appId <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用 id 必须大于 0");
         }
@@ -318,9 +319,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     chatHistoryService,
                     appId,
                     loginUser,
-                    codeGenType,
-                    // AI 工作流包含同步构建节点，不能在流处理结束后再次构建同一工程。
-                    !agent
+                    codeGenType
             );
         });
     }

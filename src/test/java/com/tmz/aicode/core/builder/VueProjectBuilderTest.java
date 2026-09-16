@@ -1,11 +1,15 @@
 package com.tmz.aicode.core.builder;
 
+import com.tmz.aicode.model.dto.build.BuildProgress;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
@@ -22,10 +26,16 @@ class VueProjectBuilderTest {
     @Test
     void rejectsMissingProjectDirectory() {
         Path missingProject = tempDir.resolve("missing-project");
+        List<BuildProgress> progressEvents = new ArrayList<>();
 
-        boolean result = new VueProjectBuilder().buildProject(missingProject.toString());
+        boolean result = new VueProjectBuilder().buildProject(
+                missingProject.toString(), progressEvents::add);
 
         assertFalse(result);
+        assertEquals(2, progressEvents.size());
+        assertEquals(BuildProgress.EVENT_BUILD_START, progressEvents.getFirst().getEvent());
+        assertEquals(BuildProgress.STATUS_FAILED, progressEvents.getLast().getStatus());
+        assertEquals("project_check", progressEvents.getLast().getStage());
     }
 
     /**

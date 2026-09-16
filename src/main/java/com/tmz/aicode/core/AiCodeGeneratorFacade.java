@@ -6,8 +6,11 @@ import com.tmz.aicode.ai.AiCodeGeneratorServiceFactory;
 import com.tmz.aicode.ai.model.HtmlCodeResult;
 import com.tmz.aicode.ai.model.MultiFileCodeResult;
 import com.tmz.aicode.ai.model.message.AiResponseMessage;
+import com.tmz.aicode.ai.model.message.BuildProgressMessage;
 import com.tmz.aicode.ai.model.message.ToolExecutedMessage;
 import com.tmz.aicode.ai.model.message.ToolRequestMessage;
+import com.tmz.aicode.constant.AppConstant;
+import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.core.parser.CodeParserExecutor;
 import com.tmz.aicode.core.saver.CodeFileSaverExecutor;
 import com.tmz.aicode.exception.BusinessException;
@@ -33,13 +36,19 @@ public class AiCodeGeneratorFacade {
 
     private final AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory;
 
+    private final VueProjectBuilder vueProjectBuilder;
+
     /**
-     * 通过构造器接收 AI 服务工厂。门面会把 appId 交给工厂，让每个应用使用独立的会话记忆。
+     * 通过构造器接收 AI 服务工厂和 Vue 构建器。门面会把 appId 交给工厂，让每个应用
+     * 使用独立的会话记忆，并在 Vue 模型响应完成后等待构建产物生成。
      *
      * @param aiCodeGeneratorServiceFactory 根据应用 id 创建代码生成服务的工厂
+     * @param vueProjectBuilder 将 Vue 源码同步构建为可预览静态文件的构建器
      */
-    public AiCodeGeneratorFacade(AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory) {
+    public AiCodeGeneratorFacade(AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory,
+                                 VueProjectBuilder vueProjectBuilder) {
         this.aiCodeGeneratorServiceFactory = aiCodeGeneratorServiceFactory;
+        this.vueProjectBuilder = vueProjectBuilder;
     }
     /**
      * 根据生成方式完成“调用 AI”和“写入文件”两个步骤。
@@ -87,6 +96,25 @@ public class AiCodeGeneratorFacade {
     public Flux<String> generateAndSaveCodeStream(String userMessage,
                                                    CodeGenTypeEnum codeGenType,
                                                    Long appId) {
+        return generateAndSaveCodeStream(userMessage, codeGenType, appId, true);
+    }
+
+    /**
+     * 根据调用场景决定 Vue 源码生成结束后是否立即构建项目。
+     *
+     * 普通模式没有后续工作节点，因此在门面内完成构建；工作流模式需要先执行质量检查，
+     * 由最终的项目构建节点统一构建，避免同一轮请求重复执行 npm install 和 npm build。
+     *
+     * @param userMessage 用户需求或增量修改指令
+     * @param codeGenType 代码生成类型
+     * @param appId 当前应用 id
+     * @param buildVueProject 是否在 Vue 模型响应结束后立即构建
+     * @return 按生成顺序发出的内部消息流
+     */
+    public Flux<String> generateAndSaveCodeStream(String userMessage,
+                                                   CodeGenTypeEnum codeGenType,
+                                                   Long appId,
+                                                   boolean buildVueProject) {
         if (codeGenType == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "生成类型不能为空");
         }
@@ -105,10 +133,12 @@ public class AiCodeGeneratorFacade {
                     appId
             );
             case VUE_PROJECT -> Flux.defer(() -> processTokenStream(
-                            aiCodeGeneratorService.generateVueProjectCodeStream(appId, userMessage)
+                            aiCodeGeneratorService.generateVueProjectCodeStream(appId, userMessage),
+                            appId,
+                            buildVueProject
                     ))
-                    // Vue 源码已经由文件工具增量维护，这里只负责传递工具执行过程。
-                    .doOnComplete(() -> log.info("Vue 工程文件生成完成，应用 id：{}", appId))
+                    // 普通模式完成时已有 dist；工作流模式完成时源码已交给后续节点。
+                    .doOnComplete(() -> log.info("Vue 工程生成阶段完成，应用 id：{}", appId))
                     .doOnError(error -> log.error("Vue 工程生成失败，应用 id：{}", appId, error));
         };
     }
@@ -121,9 +151,12 @@ public class AiCodeGeneratorFacade {
      * 根据文本内容猜测当前片段的含义。
      *
      * @param tokenStream Vue 工程生成服务返回的事件流
+     * @param appId 当前应用 id，用于定位需要同步构建的 Vue 工程目录
      * @return 按事件发生顺序输出统一 JSON 消息的 Reactor 流
      */
-    private Flux<String> processTokenStream(TokenStream tokenStream) {
+    private Flux<String> processTokenStream(TokenStream tokenStream,
+                                            Long appId,
+                                            boolean buildVueProject) {
         return Flux.create(sink -> {
             try {
                 tokenStream
@@ -147,9 +180,54 @@ public class AiCodeGeneratorFacade {
                             }
                         })
                         .onCompleteResponse(response -> {
-                            if (!sink.isCancelled()) {
-                                sink.complete();
+                            if (!buildVueProject) {
+                                if (!sink.isCancelled()) {
+                                    sink.complete();
+                                }
+                                return;
                             }
+
+                            /*
+                             * npm 构建可能持续数分钟，放入虚拟线程后不会长期占用模型回调线程。
+                             * Flux 在构建完成前保持打开，构建器产生的阶段事件仍沿同一连接发送。
+                             */
+                            Thread.startVirtualThread(() -> {
+                                try {
+                                    /*
+                                     * 文件工具已经完成全部源码写入，此时执行依赖安装和生产构建。
+                                     * 只有 dist 目录真正生成后才结束 Flux，确保下游发送 done 事件时，
+                                     * 前端刷新 iframe 就能读取最新页面，而不是看到旧构建产物。
+                                     */
+                                    String projectPath = new File(
+                                            AppConstant.CODE_OUTPUT_ROOT_DIR,
+                                            CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId
+                                    ).getAbsolutePath();
+                                    boolean buildSuccess = vueProjectBuilder.buildProject(
+                                            projectPath,
+                                            progress -> {
+                                                if (!sink.isCancelled()) {
+                                                    sink.next(JSONUtil.toJsonStr(
+                                                            new BuildProgressMessage(progress)));
+                                                }
+                                            }
+                                    );
+                                    if (!buildSuccess) {
+                                        if (!sink.isCancelled()) {
+                                            sink.error(new BusinessException(
+                                                    ErrorCode.SYSTEM_ERROR,
+                                                    "Vue 项目构建失败，请检查生成代码和依赖"
+                                            ));
+                                        }
+                                    } else if (!sink.isCancelled()) {
+                                        sink.complete();
+                                    }
+                                } catch (Throwable buildError) {
+                                    // 虚拟线程中的异常必须显式交给 Flux，才能转换为前端错误事件。
+                                    if (!sink.isCancelled()) {
+                                        sink.error(buildError);
+                                    }
+                                }
+                            });
                         })
                         .onError(error -> {
                             log.error("TokenStream 处理失败", error);

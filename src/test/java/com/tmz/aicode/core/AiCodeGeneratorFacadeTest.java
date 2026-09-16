@@ -8,8 +8,13 @@ import com.tmz.aicode.ai.AiCodeGeneratorServiceFactory;
 import com.tmz.aicode.ai.model.HtmlCodeResult;
 import com.tmz.aicode.ai.model.MultiFileCodeResult;
 import com.tmz.aicode.ai.model.message.AiResponseMessage;
+import com.tmz.aicode.ai.model.message.BuildProgressMessage;
 import com.tmz.aicode.ai.model.message.StreamMessageTypeEnum;
+import com.tmz.aicode.constant.AppConstant;
+import com.tmz.aicode.core.builder.VueProjectBuilder;
+import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
+import com.tmz.aicode.model.dto.build.BuildProgress;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.rag.content.Content;
@@ -31,10 +36,13 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -53,6 +61,7 @@ class AiCodeGeneratorFacadeTest {
     private final List<File> generatedDirectories = new ArrayList<>();
     private final AiCodeGeneratorService demoService = new DemoAiCodeGeneratorService();
     private final AiCodeGeneratorServiceFactory serviceFactory = mock(AiCodeGeneratorServiceFactory.class);
+    private final VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
     private final AiCodeGeneratorFacade facade;
 
     /**
@@ -62,7 +71,14 @@ class AiCodeGeneratorFacadeTest {
     AiCodeGeneratorFacadeTest() {
         when(serviceFactory.getAiCodeGeneratorService(anyLong(), any(CodeGenTypeEnum.class)))
                 .thenReturn(demoService);
-        facade = new AiCodeGeneratorFacade(serviceFactory);
+        when(vueProjectBuilder.buildProject(anyString(), any())).thenAnswer(invocation -> {
+            Consumer<BuildProgress> progressConsumer = invocation.getArgument(1);
+            progressConsumer.accept(BuildProgress.started(
+                    "project_check", 5, "正在检查 Vue 项目"));
+            progressConsumer.accept(BuildProgress.completed("Vue 项目构建完成"));
+            return true;
+        });
+        facade = new AiCodeGeneratorFacade(serviceFactory, vueProjectBuilder);
     }
 
     /**
@@ -196,6 +212,7 @@ class AiCodeGeneratorFacadeTest {
 
         assertNotNull(chunks);
         List<AiResponseMessage> messages = chunks.stream()
+                .filter(chunk -> chunk.contains("\"type\":\"ai_response\""))
                 .map(chunk -> JSONUtil.toBean(chunk, AiResponseMessage.class))
                 .toList();
         assertEquals(List.of(
@@ -205,7 +222,71 @@ class AiCodeGeneratorFacadeTest {
         ), messages.stream().map(AiResponseMessage::getData).toList());
         assertTrue(messages.stream().allMatch(message ->
                 StreamMessageTypeEnum.AI_RESPONSE.getValue().equals(message.getType())));
+        List<BuildProgressMessage> buildMessages = chunks.stream()
+                .filter(chunk -> chunk.contains("\"type\":\"build_progress\""))
+                .map(chunk -> JSONUtil.toBean(chunk, BuildProgressMessage.class))
+                .toList();
+        assertEquals(2, buildMessages.size());
+        assertEquals(BuildProgress.EVENT_BUILD_START,
+                buildMessages.getFirst().getData().getEvent());
+        assertEquals(BuildProgress.EVENT_BUILD_COMPLETE,
+                buildMessages.getLast().getData().getEvent());
         verify(serviceFactory).getAiCodeGeneratorService(appId, CodeGenTypeEnum.VUE_PROJECT);
+        verify(vueProjectBuilder).buildProject(
+                org.mockito.ArgumentMatchers.eq(new File(
+                        AppConstant.CODE_OUTPUT_ROOT_DIR,
+                        "vue_project_" + appId
+                ).getAbsolutePath()),
+                any()
+        );
+    }
+
+    /**
+     * Vue 构建失败时响应流必须以错误结束，不能提前向前端报告生成完成。
+     */
+    @Test
+    void vueBuildFailureTerminatesStreamWithError() {
+        long appId = IdUtil.getSnowflakeNextId();
+        String projectPath = new File(
+                AppConstant.CODE_OUTPUT_ROOT_DIR,
+                "vue_project_" + appId
+        ).getAbsolutePath();
+        when(vueProjectBuilder.buildProject(
+                org.mockito.ArgumentMatchers.eq(projectPath), any())).thenReturn(false);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> facade.generateAndSaveCodeStream(
+                                "生成一个任务管理 Vue 项目",
+                                CodeGenTypeEnum.VUE_PROJECT,
+                                appId
+                        )
+                        .collectList()
+                        .block()
+        );
+
+        assertEquals("Vue 项目构建失败，请检查生成代码和依赖", exception.getMessage());
+    }
+
+    /** 工作流代码生成阶段关闭立即构建后，只产生源码消息，由后续构建节点负责打包。 */
+    @Test
+    void workflowGenerationSkipsImmediateVueBuild() {
+        long appId = IdUtil.getSnowflakeNextId();
+
+        List<String> chunks = facade.generateAndSaveCodeStream(
+                        "生成一个任务管理 Vue 项目",
+                        CodeGenTypeEnum.VUE_PROJECT,
+                        appId,
+                        false
+                )
+                .collectList()
+                .block();
+
+        assertNotNull(chunks);
+        assertEquals(3, chunks.size());
+        assertTrue(chunks.stream().allMatch(chunk ->
+                chunk.contains("\"type\":\"ai_response\"")));
+        verify(vueProjectBuilder, never()).buildProject(anyString(), any());
     }
 
     /**

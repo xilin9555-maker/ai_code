@@ -1,6 +1,7 @@
 package com.tmz.aicode.core.builder;
 
 import cn.hutool.core.util.RuntimeUtil;
+import com.tmz.aicode.model.dto.build.BuildProgress;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -10,6 +11,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * 负责把 AI 写出的 Vue 源码构建成浏览器可以直接访问的静态文件。
@@ -26,27 +28,6 @@ public class VueProjectBuilder {
     private static final int BUILD_TIMEOUT_SECONDS = 180;
 
     /**
-     * 在虚拟线程中执行构建，让模型响应完成后可以及时结束当前请求。
-     *
-     * 构建属于耗时且主要等待磁盘、网络和子进程的任务，虚拟线程适合承载这类工作，
-     * 同时不会长期占用 Web 请求线程。构建失败只记录日志，不会把已经完成的生成结果
-     * 改成接口异常，用户仍然可以继续修改源码并再次尝试构建。
-     *
-     * @param projectPath Vue 项目根目录，目录内应当包含 package.json
-     */
-    public void buildProjectAsync(String projectPath) {
-        Thread.ofVirtual()
-                .name("vue-builder-" + System.currentTimeMillis())
-                .start(() -> {
-                    try {
-                        buildProject(projectPath);
-                    } catch (Exception e) {
-                        log.error("异步构建 Vue 项目时发生异常，项目路径：{}", projectPath, e);
-                    }
-                });
-    }
-
-    /**
      * 依次安装项目依赖并执行生产构建。
      *
      * 每一步都会检查执行结果，任何一步失败都会立即停止，避免把不完整的 dist 目录
@@ -56,35 +37,89 @@ public class VueProjectBuilder {
      * @return package.json 存在、两条 npm 命令成功且 dist 目录已生成时返回 true
      */
     public boolean buildProject(String projectPath) {
+        return buildProject(projectPath, ignored -> {
+        });
+    }
+
+    /**
+     * 依次安装依赖并构建 Vue 项目，同时报告少量稳定进度。
+     *
+     * 进度回调只描述业务阶段，不逐行转发命令输出。调用方可以把这些事件放入 SSE，
+     * 原有不需要进度的调用仍可继续使用单参数方法。
+     *
+     * @param projectPath Vue 项目根目录路径
+     * @param progressConsumer 构建进度接收器
+     * @return 构建产物可用时返回 true
+     */
+    public boolean buildProject(String projectPath, Consumer<BuildProgress> progressConsumer) {
+        Consumer<BuildProgress> safeProgressConsumer = progressConsumer == null
+                ? ignored -> {
+                }
+                : progressConsumer;
+        notifyProgress(safeProgressConsumer, BuildProgress.started(
+                "project_check", 5, "正在检查 Vue 项目"));
+
         File projectDir = new File(projectPath);
         if (!projectDir.isDirectory()) {
             log.error("Vue 项目目录不存在：{}", projectDir.getAbsolutePath());
+            notifyProgress(safeProgressConsumer, BuildProgress.failed(
+                    "project_check", 5, "Vue 项目目录不存在"));
             return false;
         }
 
         File packageJson = new File(projectDir, "package.json");
         if (!packageJson.isFile()) {
             log.error("Vue 项目缺少 package.json：{}", packageJson.getAbsolutePath());
+            notifyProgress(safeProgressConsumer, BuildProgress.failed(
+                    "project_check", 5, "Vue 项目缺少 package.json"));
             return false;
         }
 
         log.info("开始构建 Vue 项目：{}", projectDir.getAbsolutePath());
+        notifyProgress(safeProgressConsumer, BuildProgress.running(
+                "install_dependencies", 20, "正在安装项目依赖"));
         if (!executeNpmInstall(projectDir)) {
             log.error("Vue 项目依赖安装失败：{}", projectDir.getAbsolutePath());
+            notifyProgress(safeProgressConsumer, BuildProgress.failed(
+                    "install_dependencies", 20, "项目依赖安装失败"));
             return false;
         }
+        notifyProgress(safeProgressConsumer, BuildProgress.succeeded(
+                "install_dependencies", 50, "项目依赖安装完成"));
+
+        notifyProgress(safeProgressConsumer, BuildProgress.running(
+                "compile_assets", 60, "正在编译项目资源"));
         if (!executeNpmBuild(projectDir)) {
             log.error("Vue 项目打包失败：{}", projectDir.getAbsolutePath());
+            notifyProgress(safeProgressConsumer, BuildProgress.failed(
+                    "compile_assets", 60, "项目资源编译失败"));
             return false;
         }
 
+        notifyProgress(safeProgressConsumer, BuildProgress.running(
+                "verify_output", 90, "正在检查构建产物"));
         File distDir = new File(projectDir, "dist");
         if (!distDir.isDirectory()) {
             log.error("构建命令已经结束，但没有生成 dist 目录：{}", distDir.getAbsolutePath());
+            notifyProgress(safeProgressConsumer, BuildProgress.failed(
+                    "verify_output", 90, "未找到构建产物"));
             return false;
         }
         log.info("Vue 项目构建成功，静态文件目录：{}", distDir.getAbsolutePath());
+        notifyProgress(safeProgressConsumer, BuildProgress.completed("Vue 项目构建完成"));
         return true;
+    }
+
+    /**
+     * 进度展示属于附加能力，回调异常不能反向中断已经开始的 npm 构建。
+     */
+    private void notifyProgress(Consumer<BuildProgress> progressConsumer,
+                                BuildProgress progress) {
+        try {
+            progressConsumer.accept(progress);
+        } catch (RuntimeException e) {
+            log.warn("发送 Vue 构建进度失败，继续执行构建，阶段：{}", progress.getStage(), e);
+        }
     }
 
     /**
