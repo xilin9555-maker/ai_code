@@ -5,6 +5,13 @@ import com.tmz.aicode.ai.model.message.AiResponseMessage;
 import com.tmz.aicode.ai.model.message.StreamMessageTypeEnum;
 import com.tmz.aicode.ai.model.message.ToolExecutedMessage;
 import com.tmz.aicode.ai.model.message.ToolRequestMessage;
+import com.tmz.aicode.ai.tools.BaseTool;
+import com.tmz.aicode.ai.tools.FileDeleteTool;
+import com.tmz.aicode.ai.tools.FileDirReadTool;
+import com.tmz.aicode.ai.tools.FileModifyTool;
+import com.tmz.aicode.ai.tools.FileReadTool;
+import com.tmz.aicode.ai.tools.FileWriteTool;
+import com.tmz.aicode.ai.tools.ToolManager;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.model.entity.User;
@@ -24,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -31,9 +39,7 @@ import static org.mockito.Mockito.when;
  */
 class JsonMessageStreamHandlerTest {
 
-    /**
-     * 工具参数里的文件内容应在执行完成前逐段输出，完成事件只负责补齐内容并关闭代码块。
-     */
+    /** 同一工具调用的参数分片只产生一次选择提示，完成后再展示准确的完整参数。 */
     @Test
     void handlesToolChunksAndBuildsStableChatHistory() {
         long appId = 3001L;
@@ -79,24 +85,24 @@ class JsonMessageStreamHandlerTest {
                 JSONUtil.toJsonStr(new AiResponseMessage("工程生成完成。"))
         );
 
-        List<String> output = new JsonMessageStreamHandler(vueProjectBuilder)
+        List<String> output = new JsonMessageStreamHandler(
+                vueProjectBuilder, createToolManager())
                 .handle(originFlux, chatHistoryService, appId, loginUser)
                 .collectList()
                 .block();
 
         assertNotNull(output);
-        assertEquals(6, output.size(), "三个代码片段应分别进入下游流");
+        assertEquals(4, output.size(), "重复参数分片不应产生多条前端提示");
         assertEquals(1, output.stream()
                 .filter(chunk -> chunk.contains("[选择工具]"))
                 .count());
-        assertTrue(output.get(1).contains("<template>\n"));
-        assertEquals("  <h1>任务", output.get(2));
-        assertEquals("管理</h1>\n</template>", output.get(3));
-        assertEquals("\n```\n\n", output.get(4), "工具完成时不应重复发送整份文件");
+        assertTrue(output.get(1).contains("[选择工具] 写入文件"));
+        assertTrue(output.get(2).contains("[工具调用] 写入文件 src/App.vue"));
+        assertTrue(output.get(2).contains("<template><h1>任务管理</h1></template>"));
         String response = String.join("", output);
         assertTrue(response.contains("[工具调用] 写入文件 src/App.vue"));
         assertTrue(response.contains("```vue"));
-        assertTrue(response.contains("<template>\n  <h1>任务管理</h1>\n</template>"));
+        assertTrue(response.contains("<template><h1>任务管理</h1></template>"));
 
         ArgumentCaptor<String> historyCaptor = ArgumentCaptor.forClass(String.class);
         verify(chatHistoryService).addChatMessage(
@@ -116,9 +122,7 @@ class JsonMessageStreamHandlerTest {
         ).getAbsolutePath());
     }
 
-    /**
-     * 并行工具的代码仍应立即进入前端流，保存的历史则必须重新整理成独立代码块。
-     */
+    /** 并行工具按调用 id 分别提示，完整执行信息需要形成彼此独立的代码块。 */
     @Test
     void streamsInterleavedToolsAndSavesStableMarkdown() {
         long appId = 3002L;
@@ -151,14 +155,18 @@ class JsonMessageStreamHandlerTest {
                 JSONUtil.toJsonStr(new AiResponseMessage("工程生成完成。"))
         );
 
-        List<String> output = new JsonMessageStreamHandler(vueProjectBuilder)
+        List<String> output = new JsonMessageStreamHandler(
+                vueProjectBuilder, createToolManager())
                 .handle(originFlux, chatHistoryService, appId, loginUser)
                 .collectList()
                 .block();
 
         assertNotNull(output);
-        assertTrue(output.get(0).contains("<template>首页"), "第一个工具参数应立即进入响应流");
-        assertTrue(output.get(1).contains("{\"name\":"), "第二个工具参数应立即进入响应流");
+        assertEquals(5, output.size());
+        assertTrue(output.get(0).contains("[选择工具] 写入文件"));
+        assertTrue(output.get(1).contains("[选择工具] 写入文件"));
+        assertTrue(output.get(2).contains("<template>首页</template>"));
+        assertTrue(output.get(3).contains("{\"name\":\"demo\"}"));
 
         ArgumentCaptor<String> historyCaptor = ArgumentCaptor.forClass(String.class);
         verify(chatHistoryService).addChatMessage(
@@ -174,14 +182,112 @@ class JsonMessageStreamHandlerTest {
         assertTrue(savedHistory.endsWith("工程生成完成。"));
     }
 
+    /** 修改工具应通过管理器展示目标路径以及替换前后的完整内容。 */
+    @Test
+    void formatsIncrementalModificationDetails() {
+        long appId = 3003L;
+        long userId = 1003L;
+        User loginUser = User.builder().id(userId).build();
+        ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
+        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
+        when(chatHistoryService.addChatMessage(
+                eq(appId),
+                org.mockito.ArgumentMatchers.anyString(),
+                eq("ai"),
+                eq(userId)
+        )).thenReturn(true);
+
+        ToolRequestMessage requestMessage = createToolRequest(
+                "call_modify",
+                "modifyFile",
+                "{\"relativeFilePath\":\"src/App.vue\""
+        );
+        ToolExecutedMessage executedMessage = new ToolExecutedMessage();
+        executedMessage.setType(StreamMessageTypeEnum.TOOL_EXECUTED.getValue());
+        executedMessage.setId("call_modify");
+        executedMessage.setName("modifyFile");
+        executedMessage.setArguments(JSONUtil.toJsonStr(Map.of(
+                "relativeFilePath", "src/App.vue",
+                "oldContent", "<h1>旧标题</h1>",
+                "newContent", "<h1>新标题</h1>"
+        )));
+        executedMessage.setResult("文件修改成功：src/App.vue");
+
+        List<String> output = new JsonMessageStreamHandler(
+                vueProjectBuilder, createToolManager())
+                .handle(Flux.just(
+                        JSONUtil.toJsonStr(requestMessage),
+                        JSONUtil.toJsonStr(executedMessage)
+                ), chatHistoryService, appId, loginUser)
+                .collectList()
+                .block();
+
+        assertNotNull(output);
+        assertEquals(2, output.size());
+        assertTrue(output.get(0).contains("[选择工具] 修改文件"));
+        assertTrue(output.get(1).contains("[工具调用] 修改文件 src/App.vue"));
+        assertTrue(output.get(1).contains("替换前：\n```\n<h1>旧标题</h1>\n```"));
+        assertTrue(output.get(1).contains("替换后：\n```\n<h1>新标题</h1>\n```"));
+
+        ArgumentCaptor<String> historyCaptor = ArgumentCaptor.forClass(String.class);
+        verify(chatHistoryService).addChatMessage(
+                eq(appId),
+                historyCaptor.capture(),
+                eq("ai"),
+                eq(userId)
+        );
+        assertFalse(historyCaptor.getValue().contains("[选择工具]"));
+        assertTrue(historyCaptor.getValue().contains("替换前："));
+        assertTrue(historyCaptor.getValue().contains("替换后："));
+    }
+
+    /** 工作流已经包含构建节点时，流处理器只保存回复，不能再次启动异步构建。 */
+    @Test
+    void skipsDuplicateBuildForWorkflowMode() {
+        long appId = 3004L;
+        long userId = 1004L;
+        User loginUser = User.builder().id(userId).build();
+        ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
+        VueProjectBuilder vueProjectBuilder = mock(VueProjectBuilder.class);
+        when(chatHistoryService.addChatMessage(
+                eq(appId),
+                org.mockito.ArgumentMatchers.anyString(),
+                eq("ai"),
+                eq(userId)
+        )).thenReturn(true);
+
+        List<String> output = new JsonMessageStreamHandler(
+                vueProjectBuilder, createToolManager())
+                .handle(
+                        Flux.just(JSONUtil.toJsonStr(
+                                new AiResponseMessage("工作流处理完成。"))),
+                        chatHistoryService,
+                        appId,
+                        loginUser,
+                        false
+                )
+                .collectList()
+                .block();
+
+        assertEquals(List.of("工作流处理完成。"), output);
+        verify(chatHistoryService).addChatMessage(
+                appId, "工作流处理完成。", "ai", userId);
+        verifyNoInteractions(vueProjectBuilder);
+    }
+
     /**
      * 创建一个工具请求片段，方便模拟同一调用 id 的增量参数。
      */
     private ToolRequestMessage createToolRequest(String id, String arguments) {
+        return createToolRequest(id, "writeFile", arguments);
+    }
+
+    /** 创建指定名称的工具请求片段，用于验证管理器的分发行为。 */
+    private ToolRequestMessage createToolRequest(String id, String name, String arguments) {
         ToolRequestMessage message = new ToolRequestMessage();
         message.setType(StreamMessageTypeEnum.TOOL_REQUEST.getValue());
         message.setId(id);
-        message.setName("writeFile");
+        message.setName(name);
         message.setArguments(arguments);
         return message;
     }
@@ -198,6 +304,17 @@ class JsonMessageStreamHandlerTest {
         )));
         message.setResult("文件写入成功：" + path);
         return message;
+    }
+
+    /** 创建处理器测试使用的完整工具注册表。 */
+    private ToolManager createToolManager() {
+        return new ToolManager(new BaseTool[]{
+                new FileWriteTool(),
+                new FileReadTool(),
+                new FileModifyTool(),
+                new FileDirReadTool(),
+                new FileDeleteTool()
+        });
     }
 
     /** 统计 Markdown 围栏数量，用于确认所有代码块都已成对闭合。 */

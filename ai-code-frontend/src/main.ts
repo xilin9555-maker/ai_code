@@ -11,6 +11,7 @@ import {
   Menu,
   Popconfirm,
   Space,
+  Switch,
   Tag,
 } from 'ant-design-vue'
 import 'ant-design-vue/dist/reset.css'
@@ -35,6 +36,7 @@ app.use(router)
   Menu,
   Popconfirm,
   Space,
+  Switch,
   Tag,
 ].forEach((component) => app.use(component))
 

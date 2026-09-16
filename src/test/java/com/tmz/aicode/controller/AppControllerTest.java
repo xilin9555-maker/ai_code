@@ -58,6 +58,7 @@ class AppControllerTest {
                 "chatToGenCode",
                 Long.class,
                 String.class,
+                boolean.class,
                 HttpServletRequest.class,
                 HttpServletResponse.class
         );
@@ -87,12 +88,13 @@ class AppControllerTest {
         MockHttpServletResponse response = new MockHttpServletResponse();
         User loginUser = User.builder().id(1001L).build();
         when(userService.getLoginUser(request)).thenReturn(loginUser);
-        when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser))
+        when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser, true))
                 .thenReturn(Flux.just("  第一段\n", "第二段"));
 
         List<ServerSentEvent<String>> events = controller.chatToGenCode(
                         2001L,
                         "生成任务管理网站",
+                        true,
                         request,
                         response
                 )
@@ -108,7 +110,7 @@ class AppControllerTest {
         assertEquals("no-cache, no-transform", response.getHeader(HttpHeaders.CACHE_CONTROL));
         assertEquals("no", response.getHeader("X-Accel-Buffering"));
         verify(userService).getLoginUser(request);
-        verify(appService).chatToGenCode(2001L, "生成任务管理网站", loginUser);
+        verify(appService).chatToGenCode(2001L, "生成任务管理网站", loginUser, true);
     }
 
     /**
@@ -127,7 +129,7 @@ class AppControllerTest {
         User loginUser = User.builder().id(1001L).build();
         when(userService.getLoginUser(org.mockito.ArgumentMatchers.any(HttpServletRequest.class)))
                 .thenReturn(loginUser);
-        when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser))
+        when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser, false))
                 .thenReturn(Flux.just("chunk-1", "chunk-2"));
 
         MockMvc mockMvc = standaloneSetup(controller).build();
@@ -157,7 +159,7 @@ class AppControllerTest {
      * 上游失败时不能发送 done，否则前端会把只生成了一部分的代码误判为完整结果。
      */
     @Test
-    void chatToGenCodeDoesNotSendDoneAfterUpstreamError() {
+    void chatToGenCodeReturnsNamedErrorEventAfterUpstreamError() {
         AppService appService = mock(AppService.class);
         UserService userService = mock(UserService.class);
         AppController controller = new AppController(
@@ -169,25 +171,25 @@ class AppControllerTest {
         MockHttpServletResponse response = new MockHttpServletResponse();
         User loginUser = User.builder().id(1001L).build();
         when(userService.getLoginUser(request)).thenReturn(loginUser);
-        when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser))
+        when(appService.chatToGenCode(2001L, "生成任务管理网站", loginUser, false))
                 .thenReturn(Flux.concat(
                         Flux.just("已生成片段"),
                         Flux.error(new IllegalStateException("生成中断"))
                 ));
 
-        List<ServerSentEvent<String>> receivedEvents = new java.util.ArrayList<>();
-        IllegalStateException exception = assertThrows(
-                IllegalStateException.class,
-                () -> controller.chatToGenCode(2001L, "生成任务管理网站", request, response)
-                        .doOnNext(receivedEvents::add)
-                        .then()
-                        .block()
-        );
+        List<ServerSentEvent<String>> receivedEvents = controller.chatToGenCode(
+                        2001L, "生成任务管理网站", false, request, response)
+                .collectList()
+                .block();
 
-        assertEquals("生成中断", exception.getMessage());
-        assertEquals(1, receivedEvents.size());
+        assertEquals(2, receivedEvents.size());
         assertEquals("已生成片段",
                 JSONUtil.parseObj(receivedEvents.getFirst().data()).getStr("d"));
+        assertEquals("generation_error", receivedEvents.get(1).event());
+        assertEquals("生成失败：生成中断",
+                JSONUtil.parseObj(receivedEvents.get(1).data()).getStr("message"));
+        assertTrue(receivedEvents.stream().noneMatch(
+                event -> "done".equals(event.event())));
     }
 
     /**
@@ -208,6 +210,7 @@ class AppControllerTest {
                 () -> controller.chatToGenCode(
                         2001L,
                         "   ",
+                        false,
                         new MockHttpServletRequest(),
                         new MockHttpServletResponse()
                 )

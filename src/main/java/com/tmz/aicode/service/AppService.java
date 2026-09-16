@@ -53,7 +53,26 @@ public interface AppService extends IService<App> {
      * @param loginUser 当前登录用户，用于校验应用所有权
      * @return 按生成顺序持续发出的代码文本片段
      */
-    Flux<String> chatToGenCode(Long appId, String message, User loginUser);
+    default Flux<String> chatToGenCode(Long appId, String message, User loginUser) {
+        return chatToGenCode(appId, message, loginUser, false);
+    }
+
+    /**
+     * 根据指定执行模式流式生成代码并保存。
+     *
+     * 两种模式使用相同的应用 id、生成类型和对话历史，因此切换模式后仍会延续同一份
+     * 项目文件与模型记忆。
+     *
+     * @param appId 需要生成代码的应用 id
+     * @param message 用户本次提交的网站需求
+     * @param loginUser 当前登录用户
+     * @param agent 是否使用 AI 工作流模式
+     * @return 按生成顺序持续发出的文本片段
+     */
+    Flux<String> chatToGenCode(Long appId,
+                               String message,
+                               User loginUser,
+                               boolean agent);
 
     /**
      * 根据请求参数构造应用查询条件。

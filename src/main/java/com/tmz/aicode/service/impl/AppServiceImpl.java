@@ -15,6 +15,7 @@ import com.tmz.aicode.core.handler.StreamHandlerExecutor;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
 import com.tmz.aicode.exception.ThrowUtils;
+import com.tmz.aicode.langgraph4j.WorkflowApp;
 import com.tmz.aicode.mapper.AppMapper;
 import com.tmz.aicode.model.dto.app.AppAddRequest;
 import com.tmz.aicode.model.dto.app.AppQueryRequest;
@@ -248,7 +249,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * “怎样调用模型、解析结果并保存文件”。这种分工避免底层生成组件依赖用户 Session。
      */
     @Override
-    public Flux<String> chatToGenCode(Long appId, String message, User loginUser) {
+    public Flux<String> chatToGenCode(Long appId,
+                                      String message,
+                                      User loginUser,
+                                      boolean agent) {
         if (appId == null || appId <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用 id 必须大于 0");
         }
@@ -289,11 +293,19 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
          * 既能被下面的错误处理记录，又能继续由 SSE 链路通知前端。
          */
         return Flux.defer(() -> {
-            Flux<String> originFlux = aiCodeGeneratorFacade.generateAndSaveCodeStream(
-                    normalizedMessage,
-                    codeGenType,
-                    appId
-            );
+            Flux<String> originFlux;
+            if (agent) {
+                // 工作流仍把真实 appId 和既定生成类型交给同一代码生成门面，因而与普通模式
+                // 共用项目目录及 appId + codeGenType 对应的 LangChain4j 会话记忆。
+                originFlux = WorkflowApp.executeWorkflowWithFlux(
+                        normalizedMessage, appId, codeGenType);
+            } else {
+                originFlux = aiCodeGeneratorFacade.generateAndSaveCodeStream(
+                        normalizedMessage,
+                        codeGenType,
+                        appId
+                );
+            }
             /*
              * 普通模式直接收集文本，Vue 模式先解析门面产生的 JSON 事件。两类处理器最终
              * 都返回前端可展示的文本，并负责把整理后的完整 AI 回复保存到对话历史。
@@ -303,7 +315,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     chatHistoryService,
                     appId,
                     loginUser,
-                    codeGenType
+                    codeGenType,
+                    // AI 工作流包含同步构建节点，不能在流处理结束后再次构建同一工程。
+                    !agent
             );
         });
     }

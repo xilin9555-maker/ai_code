@@ -2,22 +2,26 @@ package com.tmz.aicode.service.impl;
 
 import cn.hutool.core.io.FileUtil;
 import com.tmz.aicode.ai.AiCodeGenTypeRoutingService;
+import com.tmz.aicode.ai.tools.ToolManager;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
 import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.core.handler.JsonMessageStreamHandler;
 import com.tmz.aicode.core.handler.StreamHandlerExecutor;
 import com.tmz.aicode.exception.BusinessException;
+import com.tmz.aicode.langgraph4j.WorkflowApp;
 import com.tmz.aicode.model.dto.app.AppAddRequest;
 import com.tmz.aicode.model.dto.app.AppQueryRequest;
 import com.tmz.aicode.model.entity.App;
 import com.tmz.aicode.model.entity.User;
+import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.model.vo.AppVO;
 import com.tmz.aicode.model.vo.UserVO;
 import com.tmz.aicode.mq.ScreenshotTaskProducer;
 import com.tmz.aicode.service.ChatHistoryService;
 import com.tmz.aicode.service.UserService;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
@@ -38,6 +42,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -351,6 +356,74 @@ class AppServiceImplTest {
     }
 
     /**
+     * AI 工作流模式应沿用应用已有的 id 和生成类型，并继续写入同一份对话历史。
+     *
+     * 工作流入口在测试中被替换为固定 Flux，因此不会执行节点、请求模型或构建工程。
+     */
+    @Test
+    void workflowModeSharesApplicationContextAndChatHistory() {
+        AiCodeGeneratorFacade facade = mock(AiCodeGeneratorFacade.class);
+        ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
+        AppServiceImpl appService = spy(new AppServiceImpl(
+                mock(UserService.class),
+                mock(AiCodeGenTypeRoutingService.class),
+                facade,
+                chatHistoryService,
+                createStreamHandlerExecutor(),
+                mock(VueProjectBuilder.class),
+                mock(ScreenshotTaskProducer.class)
+        ));
+        long appId = 2004L;
+        long userId = 1004L;
+        User loginUser = User.builder().id(userId).build();
+        App app = App.builder()
+                .id(appId)
+                .userId(userId)
+                .codeGenType(CodeGenTypeEnum.MULTI_FILE.getValue())
+                .build();
+        doReturn(app).when(appService).getById(appId);
+        when(chatHistoryService.addChatMessage(
+                org.mockito.ArgumentMatchers.eq(appId),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(userId)
+        )).thenReturn(true);
+
+        try (MockedStatic<WorkflowApp> workflowApp = mockStatic(WorkflowApp.class)) {
+            workflowApp.when(() -> WorkflowApp.executeWorkflowWithFlux(
+                            "扩展项目功能", appId, CodeGenTypeEnum.MULTI_FILE))
+                    .thenReturn(Flux.just("工作流步骤", "代码内容"));
+
+            List<String> chunks = appService.chatToGenCode(
+                            appId,
+                            " 扩展项目功能 ",
+                            loginUser,
+                            true
+                    )
+                    .collectList()
+                    .block();
+
+            assertEquals(List.of("工作流步骤", "代码内容"), chunks);
+            workflowApp.verify(() -> WorkflowApp.executeWorkflowWithFlux(
+                    "扩展项目功能", appId, CodeGenTypeEnum.MULTI_FILE));
+        }
+
+        verifyNoInteractions(facade);
+        verify(chatHistoryService).addChatMessage(
+                appId,
+                "扩展项目功能",
+                "user",
+                userId
+        );
+        verify(chatHistoryService).addChatMessage(
+                appId,
+                "工作流步骤代码内容",
+                "ai",
+                userId
+        );
+    }
+
+    /**
      * 当前用户不是应用创建者时，应在调用生成门面前结束流程。
      */
     @Test
@@ -477,7 +550,10 @@ class AppServiceImplTest {
      */
     private static StreamHandlerExecutor createStreamHandlerExecutor() {
         return new StreamHandlerExecutor(
-                new JsonMessageStreamHandler(mock(VueProjectBuilder.class))
+                new JsonMessageStreamHandler(
+                        mock(VueProjectBuilder.class),
+                        mock(ToolManager.class)
+                )
         );
     }
 }

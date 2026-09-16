@@ -219,6 +219,7 @@ public class AppController {
      *
      * @param appId 需要继续生成代码的应用 id
      * @param message 用户本次提交的网站需求
+     * @param agent 是否使用 AI 工作流模式
      * @param request 当前 HTTP 请求，用于读取 Session 中的登录用户
      * 每个普通事件都把代码片段放入 JSON 的 d 字段。代码中的行首空格会因此成为 JSON
      * 字符串内容，不会被 SSE 协议当作 data 字段的格式空格消费。生成流正常结束后还会发送
@@ -230,6 +231,8 @@ public class AppController {
             produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
                                                        @RequestParam String message,
+                                                       @RequestParam(defaultValue = "false")
+                                                       boolean agent,
                                                        HttpServletRequest request,
                                                        HttpServletResponse response) {
         ThrowUtils.throwIf(appId == null || appId <= 0,
@@ -244,9 +247,10 @@ public class AppController {
 
         // 登录用户从服务端 Session 中取得，客户端不能通过请求参数伪造用户身份。
         User loginUser = userService.getLoginUser(request);
-        Flux<String> contentFlux = appService.chatToGenCode(appId, message, loginUser);
+        Flux<String> contentFlux = appService.chatToGenCode(
+                appId, message, loginUser, agent);
 
-        return contentFlux
+        Flux<ServerSentEvent<String>> responseFlux = contentFlux
                 .map(chunk -> {
                     // JSON 会保护代码片段内部的空格、换行和引号，前端读取 d 字段即可还原原文。
                     String jsonData = JSONUtil.toJsonStr(Map.of("d", chunk));
@@ -262,6 +266,23 @@ public class AppController {
                                 .data("{\"completed\":true}")
                                 .build()
                 ));
+        return responseFlux.onErrorResume(error -> {
+            /*
+             * SSE 响应开始后不能再交给全局 JSON 异常处理器，否则会因为响应类型不兼容
+             * 产生第二个异常。改为具名事件后，前端既能展示失败原因，也不会误收 done。
+             */
+            String detail = StrUtil.blankToDefault(error.getMessage(), "未知错误");
+            if (detail.length() > 500) {
+                detail = detail.substring(0, 500);
+            }
+            String errorData = JSONUtil.toJsonStr(Map.of(
+                    "message", "生成失败：" + detail
+            ));
+            return Flux.just(ServerSentEvent.<String>builder()
+                    .event("generation_error")
+                    .data(errorData)
+                    .build());
+        });
     }
 
     /**

@@ -2,7 +2,7 @@ package com.tmz.aicode.ai;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.tmz.aicode.ai.tools.FileWriteTool;
+import com.tmz.aicode.ai.tools.ToolManager;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
 import com.tmz.aicode.model.enums.CodeGenTypeEnum;
@@ -39,6 +39,7 @@ public class AiCodeGeneratorServiceFactory {
     private final StreamingChatModel reasoningStreamingChatModel;
     private final RedisChatMemoryStore redisChatMemoryStore;
     private final ChatHistoryService chatHistoryService;
+    private final ToolManager toolManager;
 
     /**
      * 按应用缓存已经创建好的 AI Service。
@@ -64,6 +65,7 @@ public class AiCodeGeneratorServiceFactory {
      * @param reasoningStreamingChatModel 处理复杂工程项目生成任务的推理流式模型
      * @param redisChatMemoryStore 负责持久化各个应用对话记忆的 Redis 存储
      * @param chatHistoryService 负责在缓存未命中时从数据库恢复已有对话
+     * @param toolManager 统一提供 Vue 工程模式可调用的文件工具
      */
     public AiCodeGeneratorServiceFactory(ChatModel chatModel,
                                          @Qualifier("openAiStreamingChatModel")
@@ -71,12 +73,14 @@ public class AiCodeGeneratorServiceFactory {
                                          @Qualifier("reasoningStreamingChatModel")
                                          StreamingChatModel reasoningStreamingChatModel,
                                          RedisChatMemoryStore redisChatMemoryStore,
-                                         ChatHistoryService chatHistoryService) {
+                                         ChatHistoryService chatHistoryService,
+                                         ToolManager toolManager) {
         this.chatModel = chatModel;
         this.openAiStreamingChatModel = openAiStreamingChatModel;
         this.reasoningStreamingChatModel = reasoningStreamingChatModel;
         this.redisChatMemoryStore = redisChatMemoryStore;
         this.chatHistoryService = chatHistoryService;
+        this.toolManager = toolManager;
     }
 
     /**
@@ -144,7 +148,8 @@ public class AiCodeGeneratorServiceFactory {
                     .streamingChatModel(reasoningStreamingChatModel)
                     // 服务方法声明了 @MemoryId，因此这里必须提供按 memoryId 获取记忆的方式。
                     .chatMemoryProvider(memoryId -> chatMemory)
-                    .tools(new FileWriteTool())
+                    // 显式转成 Object[]，确保数组按可变参数展开，而不是被当作一个工具对象。
+                    .tools((Object[]) toolManager.getAllTools())
                     // 模型偶尔会编造工具名。把错误作为工具结果返回，可让模型自行改正并继续。
                     .hallucinatedToolNameStrategy(toolRequest -> ToolExecutionResultMessage.from(
                             toolRequest,

@@ -17,12 +17,18 @@ import { addApp, listGoodAppVoByPage, listMyAppVoByPage } from '@/api/appControl
 import { inspirations } from '@/data/inspirations'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { normalizeApp, type AppView } from '@/utils/app'
+import {
+  loadNewAppAgentMode,
+  saveAppAgentMode,
+  saveNewAppAgentMode,
+} from '@/utils/generationMode'
 
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 const prompt = ref('')
 const promptInput = ref<{ focus: () => void } | null>(null)
 const creating = ref(false)
+const agentMode = ref(loadNewAppAgentMode())
 const myAppsLoading = ref(false)
 const goodAppsLoading = ref(false)
 const myApps = ref<AppView[]>([])
@@ -34,6 +40,18 @@ const goodTotal = ref(0)
 const myQuery = reactive({ pageNum: 1, pageSize: 6, appName: '' })
 const goodQuery = reactive({ pageNum: 1, pageSize: 6, appName: '' })
 const isLoggedIn = computed(() => Boolean(loginUserStore.loginUser.id))
+const generationModeDescription = computed(() =>
+  agentMode.value
+    ? '先规划素材、生成代码并检查质量，适合完整应用'
+    : '直接生成代码，适合快速创建和日常调整',
+)
+
+/** 保存主页模式选择，创建成功后还会绑定到新应用。 */
+function handleAgentModeChange(value: boolean | string | number) {
+  const enabled = value === true
+  agentMode.value = enabled
+  saveNewAppAgentMode(enabled)
+}
 
 /**
  * 把灵感示例放入输入框并将页面滚动到创作区，用户仍可继续修改后再提交。
@@ -55,6 +73,7 @@ async function createApplication() {
 
   if (!isLoggedIn.value) {
     sessionStorage.setItem('pending-app-prompt', initPrompt)
+    sessionStorage.setItem('pending-app-mode', agentMode.value ? 'agent' : 'normal')
     message.info('登录后即可用这段描述创建应用')
     await router.push({ path: '/user/login', query: { redirect: '/?resume=1' } })
     return
@@ -66,8 +85,11 @@ async function createApplication() {
     if (response.data.code === 0 && response.data.data != null) {
       // 服务端的 Long 可能超过 JavaScript 安全整数范围，因此路由中始终保留原始字符串。
       const appId = String(response.data.data)
+      // 工作台读取历史前会恢复该值，因此第一次自动生成就使用主页选择的模式。
+      saveAppAgentMode(appId, agentMode.value)
       prompt.value = ''
       sessionStorage.removeItem('pending-app-prompt')
+      sessionStorage.removeItem('pending-app-mode')
       // 工作台会先读取历史记录，确认这是一个空会话后再自动发送初始化需求。
       await router.push(`/app/chat/${appId}`)
     }
@@ -158,6 +180,10 @@ watch(
 onMounted(() => {
   const pendingPrompt = sessionStorage.getItem('pending-app-prompt')
   if (pendingPrompt) prompt.value = pendingPrompt
+  const pendingMode = sessionStorage.getItem('pending-app-mode')
+  if (pendingMode === 'agent' || pendingMode === 'normal') {
+    handleAgentModeChange(pendingMode === 'agent')
+  }
   void loadGoodApps()
   if (isLoggedIn.value) void loadMyApps()
 })
@@ -199,6 +225,20 @@ onMounted(() => {
           placeholder="帮我创建个人博客网站"
           :bordered="false"
         />
+        <div class="composer-mode-row">
+          <div class="composer-mode-copy">
+            <strong>{{ agentMode ? 'AI 工作流模式' : '普通模式' }}</strong>
+            <small>{{ generationModeDescription }}</small>
+          </div>
+          <a-switch
+            :checked="agentMode"
+            :disabled="creating"
+            checked-children="AI 工作流"
+            un-checked-children="普通模式"
+            aria-label="选择首次生成模式"
+            @update:checked="handleAgentModeChange"
+          />
+        </div>
         <div class="composer-bottom">
           <span class="composer-hint">
             <span class="tiny-spark">✳</span> 写清页面、功能和喜欢的风格
@@ -372,6 +412,36 @@ onMounted(() => {
   transform: translateX(-50%);
 }
 
+.composer-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 17px;
+  padding: 10px 12px;
+  border: 1px solid #ebe2dc;
+  border-radius: 9px;
+  background: #fcfaf7;
+}
+
+.composer-mode-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.composer-mode-copy strong {
+  color: #5d5149;
+  font-size: 11px;
+}
+
+.composer-mode-copy small {
+  color: #969087;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .application-section {
   padding: 48px 0 54px;
   border-top: 1px solid var(--line);
@@ -481,6 +551,11 @@ onMounted(() => {
   .section-search :deep(.ant-input-affix-wrapper) {
     width: auto;
     flex: 1;
+  }
+
+  .composer-mode-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

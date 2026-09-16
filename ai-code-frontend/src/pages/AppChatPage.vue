@@ -12,7 +12,7 @@ import {
   SendOutlined,
   UserOutlined,
 } from '@ant-design/icons-vue'
-import { message as notification, Modal, Spin } from 'ant-design-vue'
+import { Alert, message as notification, Modal, Spin } from 'ant-design-vue'
 import 'highlight.js/styles/github-dark.css'
 import aiAvatar from '@/assets/ai-avatar.png'
 import { deleteApp, deleteAppByAdmin, deployApp, getAppVoById } from '@/api/appController'
@@ -24,6 +24,8 @@ import { getCodeGenTypeLabel } from '@/constants/codeGenType'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { renderMarkdown } from '@/utils/markdown'
 import { normalizeApp, toApiId, type AppView } from '@/utils/app'
+import { loadAppAgentMode, saveAppAgentMode } from '@/utils/generationMode'
+import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
 
 type ChatMessage = {
   id: string
@@ -54,14 +56,18 @@ const hasMoreHistory = ref(false)
 const lastCreateTime = ref<string>()
 const previewReady = ref(false)
 const previewVersion = ref(Date.now())
+const previewFrame = ref<HTMLIFrameElement>()
+const previewLoaded = ref(false)
 const messageList = ref<HTMLElement>()
+const isEditMode = ref(false)
+const selectedElementInfo = ref<ElementInfo>()
+const agentMode = ref(false)
 let eventSource: EventSource | undefined
 let streamRenderTimer: number | undefined
 let messageSequence = 0
 
 const STREAM_RENDER_INTERVAL = 80
 const HISTORY_PAGE_SIZE = 10
-
 const appId = computed(() => String(route.params.id ?? ''))
 const currentUserId = computed(() =>
   loginUserStore.loginUser.id == null ? '' : String(loginUserStore.loginUser.id),
@@ -82,9 +88,158 @@ const previewUrl = computed(() =>
     : '',
 )
 
+function formatElementLabel(element: ElementInfo) {
+  const id = element.id ? `#${element.id}` : ''
+  const classNames = element.className
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((className) => `.${className}`)
+    .join('')
+  return `${element.tagName.toLowerCase()}${id}${classNames}`
+}
+
+function formatElementAttributes(element: ElementInfo) {
+  return Object.entries(element.attributes)
+    .map(([name, value]) => `${name}="${value}"`)
+    .join(' · ')
+}
+
+const selectedElementLabel = computed(() => {
+  const element = selectedElementInfo.value
+  return element ? formatElementLabel(element) : ''
+})
+const selectedElementAttributes = computed(() => {
+  const element = selectedElementInfo.value
+  return element ? formatElementAttributes(element) : ''
+})
+const composerPlaceholder = computed(() => {
+  if (!isOwner.value) return '只有应用创建者可以继续生成'
+  if (selectedElementInfo.value) return `描述你想如何修改 ${selectedElementLabel.value}`
+  return '请描述你想生成的网站，越详细效果越好哦'
+})
+
+const generationModeDescription = computed(() =>
+  agentMode.value
+    ? '先收集素材并检查代码质量，适合完整生成和较大改动'
+    : '直接生成或修改代码，适合日常快速调整',
+)
+
+/** 按应用恢复用户上次选择的生成模式，切换模式不会清空共享对话。 */
+function restoreGenerationMode() {
+  agentMode.value = loadAppAgentMode(appId.value)
+}
+
+/** 保存当前应用的模式偏好，下一次进入工作台时继续沿用。 */
+function handleAgentModeChange(value: boolean | string | number) {
+  const enabled = value === true
+  agentMode.value = enabled
+  saveAppAgentMode(appId.value, enabled)
+}
+
+const visualEditor = new VisualEditor({
+  onElementSelected(elementInfo) {
+    selectedElementInfo.value = elementInfo
+  },
+})
+
 /** 为刚发送、尚未取得数据库 id 的消息生成只在当前页面使用的稳定 key。 */
 function createLocalMessageId() {
   return `local-${++messageSequence}`
+}
+
+/** 把网页定位信息作为纯上下文追加到用户需求后，帮助 AI 缩小修改范围。 */
+function appendElementContext(content: string, elementInfo?: ElementInfo) {
+  if (!elementInfo) return content
+
+  const normalizeLine = (value: string, maxLength: number) =>
+    value.replace(/\s+/g, ' ').trim().slice(0, maxLength)
+  const lines = [
+    '',
+    '',
+    '[可视化选中元素，仅用于定位要修改的区域]',
+    `- 元素：${normalizeLine(formatElementLabel(elementInfo), 300)}`,
+    `- CSS 选择器：${normalizeLine(elementInfo.selector, 800)}`,
+    `- 选择器匹配数量：${elementInfo.selectorMatchCount}`,
+  ]
+  if (elementInfo.pagePath) {
+    lines.push(`- 页面路径：${normalizeLine(elementInfo.pagePath, 400)}`)
+  }
+  if (elementInfo.textContent) {
+    lines.push(`- 当前内容：${normalizeLine(elementInfo.textContent, 200)}`)
+  }
+  const attributes = formatElementAttributes(elementInfo)
+  if (attributes) {
+    lines.push(`- 语义属性：${normalizeLine(attributes, 500)}`)
+  }
+  if (elementInfo.htmlSnippet) {
+    lines.push(`- HTML 摘要：${normalizeLine(elementInfo.htmlSnippet, 800)}`)
+  }
+  lines.push('[选中元素信息结束]')
+  return content + lines.join('\n')
+}
+
+/** 清空父子页面中的选择状态；发送完成后同时退出编辑模式。 */
+function finishVisualEditing() {
+  selectedElementInfo.value = undefined
+  visualEditor.clearSelection()
+  if (isEditMode.value) {
+    visualEditor.disableEditMode()
+    isEditMode.value = false
+  }
+}
+
+function clearSelectedElement() {
+  selectedElementInfo.value = undefined
+  visualEditor.clearSelection()
+}
+
+function toggleEditMode() {
+  if (isEditMode.value) {
+    visualEditor.disableEditMode()
+    isEditMode.value = false
+    return
+  }
+  if (!previewFrame.value || !previewLoaded.value) {
+    notification.warning('请等待网站预览加载完成')
+    return
+  }
+
+  visualEditor.init(previewFrame.value)
+  const result = visualEditor.enableEditMode()
+  if (result.ok) {
+    isEditMode.value = true
+    notification.info('已进入元素选择模式，点击预览中的内容即可定位')
+    return
+  }
+
+  const errorMessage =
+    result.reason === 'cross-origin'
+      ? '预览页面与工作台不同源，无法开启可视化编辑'
+      : '可视化编辑初始化失败，请刷新预览后重试'
+  notification.error(errorMessage)
+}
+
+function handlePreviewLoad() {
+  previewLoaded.value = true
+  if (!previewFrame.value) return
+
+  visualEditor.init(previewFrame.value)
+  const result = visualEditor.onIframeLoad()
+  if (isEditMode.value && !result.ok) {
+    isEditMode.value = false
+    notification.error('预览已刷新，但可视化编辑未能重新初始化')
+  }
+}
+
+function refreshPreview() {
+  clearSelectedElement()
+  previewLoaded.value = false
+  previewVersion.value = Math.max(Date.now(), previewVersion.value + 1)
+}
+
+function handleIframeMessage(event: MessageEvent) {
+  visualEditor.handleIframeMessage(event)
 }
 
 /**
@@ -225,9 +380,13 @@ async function generateCode(text = userMessage.value) {
   const content = text.trim()
   if (!content || generating.value || !isOwner.value) return
 
+  const prompt = appendElementContext(content, selectedElementInfo.value)
+  // 请求期间禁止切换开关，并固定本轮模式，避免结束回调读取到下一轮的选择。
+  const requestUsesAgent = agentMode.value
   userMessage.value = ''
   generating.value = true
-  messages.value.push({ id: createLocalMessageId(), role: 'user', content })
+  messages.value.push({ id: createLocalMessageId(), role: 'user', content: prompt })
+  finishVisualEditing()
   const assistantMessageIndex = messages.value.length
   messages.value.push({
     id: createLocalMessageId(),
@@ -237,7 +396,11 @@ async function generateCode(text = userMessage.value) {
   })
   await scrollMessagesToBottom()
 
-  const params = new URLSearchParams({ appId: appId.value, message: content })
+  const params = new URLSearchParams({
+    appId: appId.value,
+    message: prompt,
+    agent: String(requestUsesAgent),
+  })
   const streamUrl = new URL(`app/chat/gen/code?${params}`, getApiBaseUrl()).toString()
   let completed = false
   let renderedContent = ''
@@ -297,6 +460,28 @@ async function generateCode(text = userMessage.value) {
     }
   }
 
+  eventSource.addEventListener('generation_error', (event) => {
+    flushPendingChunks()
+    let errorMessage = '生成失败，请稍后重试'
+    try {
+      const payload = JSON.parse(event.data) as { message?: string }
+      if (payload.message) errorMessage = payload.message
+    } catch {
+      // 错误事件无法解析时使用稳定的兜底文案。
+    }
+
+    renderedContent += `\n\n${errorMessage}\n\n`
+    const assistantMessage = messages.value[assistantMessageIndex]
+    if (assistantMessage) {
+      assistantMessage.content = renderedContent
+      assistantMessage.streaming = false
+    }
+    completed = true
+    closeStream()
+    generating.value = false
+    notification.error(errorMessage)
+  })
+
   eventSource.addEventListener('done', async () => {
     // done 事件可能比定时刷新先到，结束前必须把缓存中的最后几个片段写入页面。
     flushPendingChunks()
@@ -312,9 +497,12 @@ async function generateCode(text = userMessage.value) {
       assistantMessage.streaming = false
     }
     generating.value = false
-    if (responseContainsWebsite()) {
+    if (
+      responseContainsWebsite() ||
+      (requestUsesAgent && app.value?.codeGenType === 'vue_project')
+    ) {
       previewReady.value = true
-      previewVersion.value = Date.now()
+      refreshPreview()
       notification.success('网站生成完成')
     } else {
       notification.success('回复完成，可以继续对话')
@@ -474,6 +662,8 @@ function confirmDelete() {
 }
 
 onMounted(async () => {
+  window.addEventListener('message', handleIframeMessage)
+  restoreGenerationMode()
   await loadApp()
   if (!app.value) return
 
@@ -506,7 +696,11 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(closeStream)
+onBeforeUnmount(() => {
+  closeStream()
+  window.removeEventListener('message', handleIframeMessage)
+  visualEditor.destroy()
+})
 </script>
 
 <template>
@@ -608,26 +802,99 @@ onBeforeUnmount(closeStream)
             :title="!isOwner ? '无法在别人的作品下对话' : undefined"
             @submit.prevent="generateCode()"
           >
+            <div class="generation-mode-row">
+              <div>
+                <strong>{{ agentMode ? 'AI 工作流模式' : '普通模式' }}</strong>
+                <small>{{ generationModeDescription }}</small>
+              </div>
+              <a-switch
+                :checked="agentMode"
+                :disabled="!isOwner || generating"
+                checked-children="AI 工作流"
+                un-checked-children="普通模式"
+                @update:checked="handleAgentModeChange"
+              />
+            </div>
+            <Alert
+              v-if="selectedElementInfo"
+              class="selected-element-alert"
+              type="info"
+              show-icon
+              closable
+              @close="clearSelectedElement"
+            >
+              <template #message>
+                <span class="selected-element-title">
+                  选中元素：<code>{{ selectedElementLabel }}</code>
+                </span>
+              </template>
+              <template #description>
+                <dl class="selected-element-details">
+                  <div v-if="selectedElementInfo.textContent">
+                    <dt>内容：</dt>
+                    <dd>{{ selectedElementInfo.textContent }}</dd>
+                  </div>
+                  <div>
+                    <dt>页面路径：</dt>
+                    <dd>
+                      <code>{{ selectedElementInfo.pagePath }}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>选择器：</dt>
+                    <dd>
+                      <code>{{ selectedElementInfo.selector }}</code>
+                    </dd>
+                  </div>
+                  <div v-if="selectedElementAttributes">
+                    <dt>属性：</dt>
+                    <dd>
+                      <code>{{ selectedElementAttributes }}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>定位验证：</dt>
+                    <dd
+                      :class="{ 'selector-verified': selectedElementInfo.selectorMatchCount === 1 }"
+                    >
+                      {{
+                        selectedElementInfo.selectorMatchCount === 1
+                          ? '已唯一匹配当前元素'
+                          : `匹配到 ${selectedElementInfo.selectorMatchCount} 个元素`
+                      }}
+                    </dd>
+                  </div>
+                </dl>
+              </template>
+            </Alert>
             <a-textarea
               v-model:value="userMessage"
               :disabled="!isOwner || generating"
               :maxlength="2000"
               :auto-size="{ minRows: 2, maxRows: 5 }"
-              :placeholder="
-                isOwner ? '请描述你想生成的网站，越详细效果越好哦' : '只有应用创建者可以继续生成'
-              "
+              :placeholder="composerPlaceholder"
               @keydown.ctrl.enter="generateCode()"
             />
-            <div>
+            <div class="composer-footer">
               <span>Ctrl + Enter 发送</span>
-              <a-button
-                type="primary"
-                html-type="submit"
-                :loading="generating"
-                :disabled="!isOwner || !userMessage.trim()"
-              >
-                <SendOutlined /> 发送
-              </a-button>
+              <div class="composer-actions">
+                <a-button
+                  :type="isEditMode ? 'primary' : 'default'"
+                  :class="{ 'edit-mode-active': isEditMode }"
+                  :disabled="!isOwner || !previewUrl || !previewLoaded || generating"
+                  @click="toggleEditMode"
+                >
+                  <EditOutlined /> {{ isEditMode ? '退出选择' : '选择元素' }}
+                </a-button>
+                <a-button
+                  type="primary"
+                  html-type="submit"
+                  :loading="generating"
+                  :disabled="!isOwner || !userMessage.trim()"
+                >
+                  <SendOutlined /> 发送
+                </a-button>
+              </div>
             </div>
           </form>
         </section>
@@ -640,17 +907,19 @@ onBeforeUnmount(closeStream)
               type="text"
               aria-label="刷新预览"
               :disabled="!previewUrl"
-              @click="previewVersion = Date.now()"
+              @click="refreshPreview"
             >
               ↻
             </a-button>
           </div>
           <iframe
             v-if="previewUrl"
+            ref="previewFrame"
             :key="previewVersion"
             :src="previewUrl"
             title="生成网站预览"
-            sandbox="allow-scripts allow-forms allow-modals allow-popups"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-popups"
+            @load="handlePreviewLoad"
           />
           <div v-else class="preview-empty">
             <span>◎</span>
@@ -968,6 +1237,36 @@ onBeforeUnmount(closeStream)
   background: #faf9f5;
 }
 
+.generation-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border: 1px solid #e4ded6;
+  border-radius: 8px;
+  background: #fffefb;
+}
+
+.generation-mode-row > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.generation-mode-row strong {
+  color: #5d5149;
+  font-size: 11px;
+}
+
+.generation-mode-row small {
+  color: #9a8f87;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
 .chat-composer :deep(.ant-input) {
   resize: none;
   border-color: #dcdbd1;
@@ -976,16 +1275,91 @@ onBeforeUnmount(closeStream)
   font-size: 12px;
 }
 
-.chat-composer > div {
+.selected-element-alert {
+  margin-bottom: 10px;
+  border-color: #e2cfc2;
+  background: #f8f1eb;
+}
+
+.selected-element-alert :deep(.ant-alert-message) {
+  color: #5d5149;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.selected-element-alert :deep(.ant-alert-description) {
+  color: #82766f;
+  font-size: 10px;
+}
+
+.selected-element-title code,
+.selected-element-details code {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+.selected-element-title code {
+  color: #b54f31;
+}
+
+.selected-element-details {
+  display: grid;
+  max-height: 128px;
+  gap: 4px;
+  margin: 5px 0 0;
+  overflow: auto;
+}
+
+.selected-element-details > div {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 5px;
+}
+
+.selected-element-details dt {
+  color: #6e625b;
+  font-weight: 650;
+}
+
+.selected-element-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.selected-element-details .selector-verified {
+  color: #4f7650;
+  font-weight: 600;
+}
+
+.composer-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-top: 10px;
 }
 
-.chat-composer > div > span {
+.composer-footer > span {
   color: #a0a197;
   font-size: 9px;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-actions .edit-mode-active {
+  border-color: #b54f31;
+  background: #b54f31;
+  box-shadow: none;
+}
+
+.composer-actions .edit-mode-active:hover,
+.composer-actions .edit-mode-active:focus {
+  border-color: #9f3f25;
+  background: #9f3f25;
 }
 
 .preview-panel {
@@ -1104,6 +1478,16 @@ onBeforeUnmount(closeStream)
 
   .preview-panel {
     min-height: 520px;
+  }
+
+  .composer-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .composer-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 </style>

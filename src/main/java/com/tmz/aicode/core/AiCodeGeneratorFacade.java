@@ -107,7 +107,7 @@ public class AiCodeGeneratorFacade {
             case VUE_PROJECT -> Flux.defer(() -> processTokenStream(
                             aiCodeGeneratorService.generateVueProjectCodeStream(appId, userMessage)
                     ))
-                    // Vue 文件已经由 writeFile 工具逐个保存，这里只负责传递生成过程。
+                    // Vue 源码已经由文件工具增量维护，这里只负责传递工具执行过程。
                     .doOnComplete(() -> log.info("Vue 工程文件生成完成，应用 id：{}", appId))
                     .doOnError(error -> log.error("Vue 工程生成失败，应用 id：{}", appId, error));
         };

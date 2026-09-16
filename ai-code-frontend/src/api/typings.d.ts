@@ -136,6 +136,7 @@ declare namespace API {
   type chatToGenCodeParams = {
     appId: number
     message: string
+    agent?: boolean
   }
 
   type DeleteRequest = {

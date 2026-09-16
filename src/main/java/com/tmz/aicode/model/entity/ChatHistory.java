@@ -37,7 +37,7 @@ public class ChatHistory implements Serializable {
     private Long id;
 
     /**
-     * 完整消息内容。字段在数据库中使用 text，能够保存较长的生成结果。
+     * 完整消息内容。数据库使用 MEDIUMTEXT，确保包含多个工程文件的 AI 回复也能完整保存。
      */
     @Column("message")
     private String message;

@@ -1,6 +1,5 @@
 package com.tmz.aicode.core.handler;
 
-import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
@@ -9,6 +8,8 @@ import com.tmz.aicode.ai.model.message.StreamMessage;
 import com.tmz.aicode.ai.model.message.StreamMessageTypeEnum;
 import com.tmz.aicode.ai.model.message.ToolExecutedMessage;
 import com.tmz.aicode.ai.model.message.ToolRequestMessage;
+import com.tmz.aicode.ai.tools.BaseTool;
+import com.tmz.aicode.ai.tools.ToolManager;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.builder.VueProjectBuilder;
 import com.tmz.aicode.exception.ErrorCode;
@@ -21,9 +22,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -37,22 +36,26 @@ import java.util.Set;
 public class JsonMessageStreamHandler {
 
     private final VueProjectBuilder vueProjectBuilder;
+    private final ToolManager toolManager;
 
     /**
      * 注入 Vue 项目构建器，在工程源码生成完整后启动后台构建。
      *
      * @param vueProjectBuilder 负责安装依赖并生成 dist 目录的构建器
+     * @param toolManager 负责查找工具及其对应的展示策略
      */
-    public JsonMessageStreamHandler(VueProjectBuilder vueProjectBuilder) {
+    public JsonMessageStreamHandler(VueProjectBuilder vueProjectBuilder,
+                                    ToolManager toolManager) {
         this.vueProjectBuilder = vueProjectBuilder;
+        this.toolManager = toolManager;
     }
 
     /**
      * 解析统一消息、生成前端文本，并在流结束后保存完整对话。
      *
-     * 工具参数通常分成很多片段到达，而且文件内容就包含在这些参数中。处理器按工具调用
-     * 累积 JSON 片段，并及时提取 content 新增的部分返回前端，避免等整个文件写完后才
-     * 一次性显示。announcedToolNames 还会保证同一种工具在本轮响应中只提示一次。
+     * 工具请求参数可能分成多个不完整片段到达，因此请求阶段只按调用 id 展示一次工具
+     * 中文名称。执行完成事件携带完整参数，此时再交给具体工具生成准确的路径、代码或
+     * 修改前后对比信息，并将同一份内容保存到对话历史。
      *
      * @param originFlux 门面输出的统一 JSON 消息流
      * @param chatHistoryService 对话历史服务
@@ -64,21 +67,44 @@ public class JsonMessageStreamHandler {
                                ChatHistoryService chatHistoryService,
                                long appId,
                                User loginUser) {
+        return handle(originFlux, chatHistoryService, appId, loginUser, true);
+    }
+
+    /**
+     * 解析统一消息，并按调用方选择决定是否在流结束后启动构建。
+     *
+     * 普通模式由该处理器启动异步构建；AI 工作流包含独立的项目构建节点，因此只保存
+     * 回复，不重复安装依赖和执行构建。
+     *
+     * @param originFlux 门面或工作流输出的统一 JSON 消息流
+     * @param chatHistoryService 对话历史服务
+     * @param appId 当前应用 id
+     * @param loginUser 发起生成的登录用户
+     * @param buildAfterComplete 流结束后是否启动异步构建
+     * @return 已转换为可展示文本的响应流
+     */
+    public Flux<String> handle(Flux<String> originFlux,
+                               ChatHistoryService chatHistoryService,
+                               long appId,
+                               User loginUser,
+                               boolean buildAfterComplete) {
         return Flux.defer(() -> {
             StringBuilder chatHistoryBuilder = new StringBuilder();
-            Set<String> announcedToolNames = new HashSet<>();
-            Map<String, ToolStreamState> toolStates = new HashMap<>();
+            Set<String> seenToolRequestIds = new HashSet<>();
             return originFlux
                     .map(chunk -> handleJsonMessageChunk(
                             chunk,
                             chatHistoryBuilder,
-                            announcedToolNames,
-                            toolStates
+                            seenToolRequestIds
                     ))
                     // 只过滤当前片段没有产生可展示增量的情况。
                     .filter(StrUtil::isNotEmpty)
                     .doOnComplete(() -> handleCompletedResponse(
-                            chatHistoryService, appId, loginUser, chatHistoryBuilder
+                            chatHistoryService,
+                            appId,
+                            loginUser,
+                            chatHistoryBuilder,
+                            buildAfterComplete
                     ))
                     .doOnError(error -> saveFailureResponse(
                             chatHistoryService,
@@ -98,27 +124,29 @@ public class JsonMessageStreamHandler {
     private void handleCompletedResponse(ChatHistoryService chatHistoryService,
                                          long appId,
                                          User loginUser,
-                                         StringBuilder chatHistoryBuilder) {
+                                         StringBuilder chatHistoryBuilder,
+                                         boolean buildAfterComplete) {
         saveCompletedResponse(
                 chatHistoryService,
                 appId,
                 loginUser.getId(),
                 chatHistoryBuilder.toString()
         );
-        File projectDir = new File(AppConstant.CODE_OUTPUT_ROOT_DIR, "vue_project_" + appId);
-        vueProjectBuilder.buildProjectAsync(projectDir.getAbsolutePath());
+        if (buildAfterComplete) {
+            File projectDir = new File(AppConstant.CODE_OUTPUT_ROOT_DIR, "vue_project_" + appId);
+            vueProjectBuilder.buildProjectAsync(projectDir.getAbsolutePath());
+        }
     }
 
     /**
      * 根据 type 字段处理一个内部 JSON 消息。
      *
-     * AI 文本会直接进入前端和历史记录；工具请求负责持续输出正在生成的文件内容；
-     * 工具完成消息负责补齐前端内容，同时向历史记录写入结构完整的代码块。
+     * AI 文本会直接进入前端和历史记录；工具请求输出一次中文选择提示；工具完成消息
+     * 根据具体工具生成参数详情，同时把相同内容写入历史记录。
      */
     private String handleJsonMessageChunk(String chunk,
                                           StringBuilder chatHistoryBuilder,
-                                          Set<String> announcedToolNames,
-                                          Map<String, ToolStreamState> toolStates) {
+                                          Set<String> seenToolRequestIds) {
         StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
         StreamMessageTypeEnum type = StreamMessageTypeEnum.getEnumByValue(streamMessage.getType());
         if (type == null) {
@@ -128,12 +156,8 @@ public class JsonMessageStreamHandler {
 
         return switch (type) {
             case AI_RESPONSE -> handleAiResponse(chunk, chatHistoryBuilder);
-            case TOOL_REQUEST -> handleToolRequest(
-                    chunk, chatHistoryBuilder, announcedToolNames, toolStates
-            );
-            case TOOL_EXECUTED -> handleToolExecuted(
-                    chunk, chatHistoryBuilder, toolStates
-            );
+            case TOOL_REQUEST -> handleToolRequest(chunk, seenToolRequestIds);
+            case TOOL_EXECUTED -> handleToolExecuted(chunk, chatHistoryBuilder);
         };
     }
 
@@ -151,207 +175,72 @@ public class JsonMessageStreamHandler {
     }
 
     /**
-     * 增量处理工具参数，并把刚生成的文件内容立即传给前端。
+     * 每个工具调用只在首次收到对应 id 时展示一次选择提示。
      *
-     * 每个文件都有独立的调用 id，如果按 id 去重，生成十个文件仍会显示十次相同提示。
-     * 选择提示按工具名称去重；参数片段则按调用 id 累积，从尚未闭合的 JSON 字符串中
-     * 解码 content。这样模型每生成一小段代码，前端都能收到对应增量。
+     * 同一个调用的参数可能产生多个分片，按 id 去重可以避免连续出现重复提示。极少数
+     * 模型接口不提供 id 时使用工具名兜底，至少保证响应不会完全缺少进度信息。
      */
-    private String handleToolRequest(String chunk,
-                                     StringBuilder chatHistoryBuilder,
-                                     Set<String> announcedToolNames,
-                                     Map<String, ToolStreamState> toolStates) {
+    private String handleToolRequest(String chunk, Set<String> seenToolRequestIds) {
         ToolRequestMessage message = JSONUtil.toBean(chunk, ToolRequestMessage.class);
-        String toolName = message.getName();
-        StringBuilder output = new StringBuilder();
-        if (StrUtil.isNotBlank(toolName) && announcedToolNames.add(toolName)) {
-            // 选择提示只用于实时反馈，不写入需要长期保存的对话历史。
-            output.append("\n\n[选择工具] 写入文件\n\n");
+        String requestKey = StrUtil.blankToDefault(message.getId(), message.getName());
+        if (StrUtil.isBlank(requestKey) || !seenToolRequestIds.add(requestKey)) {
+            return "";
         }
 
-        String toolKey = getToolKey(message.getId(), toolName);
-        if (StrUtil.isBlank(toolKey) || message.getArguments() == null) {
-            return output.toString();
+        BaseTool tool = findTool(message.getName());
+        if (tool == null) {
+            String toolName = StrUtil.blankToDefault(message.getName(), "未知工具");
+            log.warn("收到未注册的工具请求：{}", toolName);
+            return String.format("\n\n[选择工具] %s\n\n", toolName);
         }
-        ToolStreamState state = toolStates.computeIfAbsent(toolKey, ignored -> new ToolStreamState());
-        state.arguments.append(message.getArguments());
-        appendNewToolContent(state, output);
-        return output.toString();
+        return tool.generateToolRequestResponse();
     }
 
     /**
-     * 工具完成时补齐尚未输出的内容并关闭 Markdown 代码块。
-     *
-     * 正常情况下绝大部分代码已经由工具参数分片实时输出，这里只发送最后尚未抵达的少量
-     * 内容。如果上游没有提供分片，则退化为一次性输出完整文件，保证结果不会丢失。
+     * 使用完整参数生成工具执行详情，并将相同文本同时发送给前端和写入历史记录。
      */
-    private String handleToolExecuted(String chunk,
-                                      StringBuilder chatHistoryBuilder,
-                                      Map<String, ToolStreamState> toolStates) {
+    private String handleToolExecuted(String chunk, StringBuilder chatHistoryBuilder) {
         ToolExecutedMessage message = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
-        JSONObject arguments = JSONUtil.parseObj(message.getArguments());
-        String relativeFilePath = arguments.getStr("relativeFilePath");
-        if (StrUtil.isBlank(relativeFilePath)) {
-            throw new IllegalArgumentException("writeFile 工具缺少 relativeFilePath 参数");
-        }
-        String content = arguments.getStr("content");
-        if (content == null) {
-            content = "";
-        }
-        String toolKey = getToolKey(message.getId(), message.getName());
-        ToolStreamState state = toolStates.remove(toolKey);
-        if (state == null) {
-            state = new ToolStreamState();
+        JSONObject arguments = parseToolArguments(message);
+        BaseTool tool = findTool(message.getName());
+
+        String result;
+        if (tool == null) {
+            String toolName = StrUtil.blankToDefault(message.getName(), "未知工具");
+            log.warn("收到未注册工具的执行结果：{}", toolName);
+            result = "[工具调用] " + toolName;
+        } else {
+            try {
+                result = tool.generateToolExecutedResult(arguments);
+            } catch (RuntimeException e) {
+                log.warn("生成工具执行展示信息失败，工具：{}", message.getName(), e);
+                result = "[工具调用] " + tool.getDisplayName() + "（参数无法展示）";
+            }
         }
 
-        StringBuilder output = new StringBuilder();
-        openCodeBlockIfNecessary(state, relativeFilePath, output);
-        int emittedLength = Math.min(state.emittedContentLength, content.length());
-        if (content.length() > emittedLength) {
-            output.append(content.substring(emittedLength));
-        }
-        output.append("\n```\n\n");
-
-        // 历史记录使用工具完成事件中的完整参数重新组装，避免并行参数流造成围栏交错。
-        String language = StrUtil.blankToDefault(FileUtil.getSuffix(relativeFilePath), "text");
-        chatHistoryBuilder.append("\n\n[工具调用] 写入文件 ")
-                .append(relativeFilePath)
-                .append("\n```")
-                .append(language)
-                .append('\n')
-                .append(content)
-                .append("\n```\n\n");
-        return output.toString();
+        String output = String.format("\n\n%s\n\n", result);
+        chatHistoryBuilder.append(output);
+        return output;
     }
 
     /**
-     * 从当前累计参数中提取路径与文件内容，只输出相对于上一次新增的代码。
+     * 将执行完成事件中的参数解析成 JSON；异常参数只影响详情展示，不中断整个响应流。
      */
-    private void appendNewToolContent(ToolStreamState state, StringBuilder output) {
-        String accumulatedArguments = state.arguments.toString();
-        JsonStringPrefix pathPrefix = decodeJsonStringPrefix(
-                accumulatedArguments, "relativeFilePath"
-        );
-        JsonStringPrefix contentPrefix = decodeJsonStringPrefix(accumulatedArguments, "content");
-        if (pathPrefix == null || !pathPrefix.complete() || contentPrefix == null) {
-            return;
+    private JSONObject parseToolArguments(ToolExecutedMessage message) {
+        if (StrUtil.isBlank(message.getArguments())) {
+            return new JSONObject();
         }
-
-        openCodeBlockIfNecessary(state, pathPrefix.value(), output);
-        String decodedContent = contentPrefix.value();
-        if (decodedContent.length() <= state.emittedContentLength) {
-            return;
+        try {
+            return JSONUtil.parseObj(message.getArguments());
+        } catch (RuntimeException e) {
+            log.warn("工具执行参数不是有效 JSON，工具：{}", message.getName(), e);
+            return new JSONObject();
         }
-        String delta = decodedContent.substring(state.emittedContentLength);
-        state.emittedContentLength = decodedContent.length();
-        output.append(delta);
     }
 
-    /**
-     * 第一次取得完整文件路径时输出文件标题和代码块起始标记。
-     */
-    private void openCodeBlockIfNecessary(ToolStreamState state,
-                                          String relativeFilePath,
-                                          StringBuilder output) {
-        if (state.codeBlockOpened) {
-            return;
-        }
-        String language = StrUtil.blankToDefault(FileUtil.getSuffix(relativeFilePath), "text");
-        String header = "\n\n[工具调用] 写入文件 " + relativeFilePath
-                + "\n```" + language + "\n";
-        state.codeBlockOpened = true;
-        output.append(header);
-    }
-
-    /**
-     * 工具 id 在一次调用中保持稳定；极少数兼容接口没有返回 id 时使用工具名兜底。
-     */
-    private String getToolKey(String toolId, String toolName) {
-        return StrUtil.isNotBlank(toolId) ? toolId : toolName;
-    }
-
-    /**
-     * 从尚未接收完整的 JSON 中解码某个字符串属性。
-     *
-     * 这里不能直接调用 JSONUtil，因为流式阶段的字符串通常还缺少结尾引号和右花括号。
-     * 方法会安全处理换行、引号、反斜杠与 Unicode 转义；遇到尚未接收完整的转义序列时
-     * 暂停在完整字符之前，下一片数据到达后再继续输出。
-     */
-    private JsonStringPrefix decodeJsonStringPrefix(String json, String propertyName) {
-        String key = "\"" + propertyName + "\"";
-        int keyIndex = json.indexOf(key);
-        if (keyIndex < 0) {
-            return null;
-        }
-
-        int cursor = keyIndex + key.length();
-        while (cursor < json.length() && Character.isWhitespace(json.charAt(cursor))) {
-            cursor++;
-        }
-        if (cursor >= json.length() || json.charAt(cursor) != ':') {
-            return null;
-        }
-        cursor++;
-        while (cursor < json.length() && Character.isWhitespace(json.charAt(cursor))) {
-            cursor++;
-        }
-        if (cursor >= json.length() || json.charAt(cursor) != '"') {
-            return null;
-        }
-        cursor++;
-
-        StringBuilder decoded = new StringBuilder();
-        while (cursor < json.length()) {
-            char current = json.charAt(cursor++);
-            if (current == '"') {
-                return new JsonStringPrefix(decoded.toString(), true);
-            }
-            if (current != '\\') {
-                decoded.append(current);
-                continue;
-            }
-            if (cursor >= json.length()) {
-                break;
-            }
-
-            char escaped = json.charAt(cursor++);
-            switch (escaped) {
-                case '"', '\\', '/' -> decoded.append(escaped);
-                case 'b' -> decoded.append('\b');
-                case 'f' -> decoded.append('\f');
-                case 'n' -> decoded.append('\n');
-                case 'r' -> decoded.append('\r');
-                case 't' -> decoded.append('\t');
-                case 'u' -> {
-                    if (cursor + 4 > json.length()) {
-                        return new JsonStringPrefix(decoded.toString(), false);
-                    }
-                    String hex = json.substring(cursor, cursor + 4);
-                    try {
-                        decoded.append((char) Integer.parseInt(hex, 16));
-                    } catch (NumberFormatException ignored) {
-                        return new JsonStringPrefix(decoded.toString(), false);
-                    }
-                    cursor += 4;
-                }
-                default -> {
-                    // 非法转义交给完整工具参数校验处理，流式展示先停在可靠内容处。
-                    return new JsonStringPrefix(decoded.toString(), false);
-                }
-            }
-        }
-        return new JsonStringPrefix(decoded.toString(), false);
-    }
-
-    /** 保存一个工具调用在流式阶段的累计参数和已输出位置。 */
-    private static class ToolStreamState {
-        private final StringBuilder arguments = new StringBuilder();
-        private int emittedContentLength;
-        private boolean codeBlockOpened;
-    }
-
-    /** 字符串属性当前可以安全解码的内容，以及它的结束引号是否已经到达。 */
-    private record JsonStringPrefix(String value, boolean complete) {
+    /** 工具名称为空时直接返回 null，避免不可变 Map 对 null 键的限制。 */
+    private BaseTool findTool(String toolName) {
+        return StrUtil.isBlank(toolName) ? null : toolManager.getTool(toolName);
     }
 
     /**

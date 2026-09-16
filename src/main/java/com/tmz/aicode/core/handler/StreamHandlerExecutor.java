@@ -38,12 +38,37 @@ public class StreamHandlerExecutor {
                                   long appId,
                                   User loginUser,
                                   CodeGenTypeEnum codeGenType) {
+        return doExecute(
+                originFlux, chatHistoryService, appId, loginUser, codeGenType, true);
+    }
+
+    /**
+     * 选择流处理器，并控制 Vue 流结束后是否由处理器启动构建。
+     *
+     * @param originFlux 原始响应流
+     * @param chatHistoryService 对话历史服务
+     * @param appId 当前应用 id
+     * @param loginUser 发起生成的登录用户
+     * @param codeGenType 当前应用的代码生成类型
+     * @param buildAfterComplete Vue 流结束后是否启动异步构建
+     * @return 可以直接交给 SSE 控制器的文本流
+     */
+    public Flux<String> doExecute(Flux<String> originFlux,
+                                  ChatHistoryService chatHistoryService,
+                                  long appId,
+                                  User loginUser,
+                                  CodeGenTypeEnum codeGenType,
+                                  boolean buildAfterComplete) {
         if (codeGenType == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "生成类型不能为空");
         }
         return switch (codeGenType) {
             case VUE_PROJECT -> jsonMessageStreamHandler.handle(
-                    originFlux, chatHistoryService, appId, loginUser
+                    originFlux,
+                    chatHistoryService,
+                    appId,
+                    loginUser,
+                    buildAfterComplete
             );
             case HTML, MULTI_FILE -> new SimpleTextStreamHandler().handle(
                     originFlux, chatHistoryService, appId, loginUser

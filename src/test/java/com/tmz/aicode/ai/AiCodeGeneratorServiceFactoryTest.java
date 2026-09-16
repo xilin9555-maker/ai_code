@@ -1,12 +1,19 @@
 package com.tmz.aicode.ai;
 
+import com.tmz.aicode.ai.tools.BaseTool;
+import com.tmz.aicode.ai.tools.FileDeleteTool;
+import com.tmz.aicode.ai.tools.FileDirReadTool;
+import com.tmz.aicode.ai.tools.FileModifyTool;
+import com.tmz.aicode.ai.tools.FileReadTool;
+import com.tmz.aicode.ai.tools.FileWriteTool;
+import com.tmz.aicode.ai.tools.ToolManager;
+import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.service.ChatHistoryService;
 import dev.langchain4j.community.store.memory.chat.redis.RedisChatMemoryStore;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import org.junit.jupiter.api.Test;
-import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -32,7 +39,8 @@ class AiCodeGeneratorServiceFactoryTest {
                     mock(StreamingChatModel.class),
                     mock(StreamingChatModel.class),
                     mock(RedisChatMemoryStore.class),
-                    chatHistoryService
+                    chatHistoryService,
+                    createToolManager()
             );
 
     /**
@@ -46,6 +54,23 @@ class AiCodeGeneratorServiceFactoryTest {
         assertSame(firstService, secondService, "相同 appId 应返回同一个缓存实例");
         verify(chatHistoryService, times(1))
                 .loadChatHistoryToMemory(eq(1001L), any(MessageWindowChatMemory.class), eq(20));
+    }
+
+    /**
+     * 两种执行模式只决定是否经过工作流，不参与服务缓存键计算。
+     * 因此它们用同一个应用和生成类型取服务时，会自然共享同一份模型会话记忆。
+     */
+    @Test
+    void sameAppAndCodeTypeReuseMemoryAcrossExecutionModes() {
+        AiCodeGeneratorService normalModeService = serviceFactory.getAiCodeGeneratorService(
+                1002L, CodeGenTypeEnum.VUE_PROJECT);
+        AiCodeGeneratorService workflowModeService = serviceFactory.getAiCodeGeneratorService(
+                1002L, CodeGenTypeEnum.VUE_PROJECT);
+
+        assertSame(normalModeService, workflowModeService,
+                "相同应用和生成类型应共享同一个服务实例");
+        verify(chatHistoryService, times(1)).loadChatHistoryToMemory(
+                eq(1002L), any(MessageWindowChatMemory.class), eq(100));
     }
 
     /**
@@ -72,5 +97,16 @@ class AiCodeGeneratorServiceFactoryTest {
         assertNotSame(htmlService, vueService, "不同生成类型应使用不同的缓存实例");
         verify(chatHistoryService).loadChatHistoryToMemory(
                 eq(1001L), any(MessageWindowChatMemory.class), eq(100));
+    }
+
+    /** 创建与生产环境一致的五个工程工具，验证工厂能够完成实际工具绑定。 */
+    private static ToolManager createToolManager() {
+        return new ToolManager(new BaseTool[]{
+                new FileWriteTool(),
+                new FileReadTool(),
+                new FileModifyTool(),
+                new FileDirReadTool(),
+                new FileDeleteTool()
+        });
     }
 }
