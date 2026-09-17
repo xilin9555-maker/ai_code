@@ -2,6 +2,10 @@
 # 根目录文件不参与打包，部署环境可以改用环境变量或外部配置文件提供相同属性。
 langchain4j:
   open-ai:
+    chat-model:
+      # 网络抖动、连接重置或服务端临时错误由模型客户端自动重试，减少偶发失败。
+      # 该次数只负责请求级故障；内容不合格时的重新生成由输出护轨单独控制。
+      max-retries: 3
     # 工程生成使用独立配置项，当前默认沿用流式模型连接信息，后续可以单独切换推理模型。
     reasoning-streaming-chat-model:
       base-url: ${langchain4j.open-ai.streaming-chat-model.base-url}

@@ -7,6 +7,7 @@ import com.tmz.aicode.ai.model.message.StreamMessageTypeEnum;
 import com.tmz.aicode.ai.model.message.ToolExecutedMessage;
 import com.tmz.aicode.ai.model.message.ToolRequestMessage;
 import com.tmz.aicode.ai.tools.BaseTool;
+import com.tmz.aicode.ai.tools.ExitTool;
 import com.tmz.aicode.ai.tools.FileDeleteTool;
 import com.tmz.aicode.ai.tools.FileDirReadTool;
 import com.tmz.aicode.ai.tools.FileModifyTool;
@@ -329,7 +330,8 @@ class JsonMessageStreamHandlerTest {
                 new FileReadTool(),
                 new FileModifyTool(),
                 new FileDirReadTool(),
-                new FileDeleteTool()
+                new FileDeleteTool(),
+                new ExitTool()
         });
     }
 

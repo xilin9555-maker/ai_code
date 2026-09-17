@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -169,6 +170,7 @@ class AiServiceStreamingResponseHandler implements StreamingChatResponseHandler 
 
                 // Invoke output guardrails
                 if (hasOutputGuardrails) {
+                    String responseBeforeGuardrails = aiMessage.text();
                     if (commonGuardrailParams != null) {
                         var newCommonParams = GuardrailRequestParams.builder()
                                 .chatMemory(getMemory())
@@ -187,9 +189,18 @@ class AiServiceStreamingResponseHandler implements StreamingChatResponseHandler 
                                 context.guardrailService().executeGuardrails(methodKey, outputGuardrailParams);
                     }
 
-                    // If we have output guardrails, we should process all of the partial responses first before
-                    // completing
-                    responseBuffer.forEach(partialResponseHandler::accept);
+                    /*
+                     * 输出护轨执行期间不能提前把片段交给调用方，否则第一次的不合格内容
+                     * 已经发送后就无法撤回。若护轨触发了重试，最终响应会与首次响应不同，
+                     * 此时只发送最终通过检查的完整文本；若没有重试，则按原有片段顺序发送，
+                     * 保留调用方现有的拼接行为。
+                     */
+                    String validatedResponse = finalChatResponse.aiMessage().text();
+                    if (!Objects.equals(responseBeforeGuardrails, validatedResponse)) {
+                        partialResponseHandler.accept(validatedResponse);
+                    } else {
+                        responseBuffer.forEach(partialResponseHandler::accept);
+                    }
                     responseBuffer.clear();
                 }
 

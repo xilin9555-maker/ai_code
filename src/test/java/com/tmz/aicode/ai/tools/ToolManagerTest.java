@@ -19,23 +19,25 @@ class ToolManagerTest {
     private final FileModifyTool fileModifyTool = new FileModifyTool();
     private final FileDirReadTool fileDirReadTool = new FileDirReadTool();
     private final FileDeleteTool fileDeleteTool = new FileDeleteTool();
+    private final ExitTool exitTool = new ExitTool();
 
     /** 管理器应注册全部工具，并通过英文方法名返回原始实例。 */
     @Test
     void registersAndFindsAllTools() {
         ToolManager toolManager = createToolManager();
 
-        assertEquals(5, toolManager.getAllTools().length);
+        assertEquals(6, toolManager.getAllTools().length);
         assertSame(fileWriteTool, toolManager.getTool("writeFile"));
         assertSame(fileReadTool, toolManager.getTool("readFile"));
         assertSame(fileModifyTool, toolManager.getTool("modifyFile"));
         assertSame(fileDirReadTool, toolManager.getTool("readDir"));
         assertSame(fileDeleteTool, toolManager.getTool("deleteFile"));
+        assertSame(exitTool, toolManager.getTool("exit"));
         assertNotSame(toolManager.getAllTools(), toolManager.getAllTools(),
                 "工具数组应返回副本，不能暴露内部数组");
     }
 
-    /** 五个工具应按照各自参数生成不同且可核对的用户反馈。 */
+    /** 六个工具应按照各自职责生成不同且可核对的用户反馈。 */
     @Test
     void generatesToolSpecificDisplayMessages() {
         JSONObject fileArguments = new JSONObject()
@@ -61,6 +63,11 @@ class ToolManagerTest {
                 fileDirReadTool.generateToolExecutedResult(new JSONObject()));
         assertEquals("[工具调用] 删除文件 src/App.vue",
                 fileDeleteTool.generateToolExecutedResult(fileArguments));
+        assertEquals("\n\n[选择工具] 退出工具调用\n\n",
+                exitTool.generateToolRequestResponse());
+        assertEquals("不要继续调用工具，可以输出最终结果了", exitTool.exit());
+        assertEquals("\n\n[执行结束]\n\n",
+                exitTool.generateToolExecutedResult(new JSONObject()));
     }
 
     /** 重复工具名会导致流事件无法准确分发，必须在初始化阶段拒绝。 */
@@ -78,7 +85,8 @@ class ToolManagerTest {
                 fileReadTool,
                 fileModifyTool,
                 fileDirReadTool,
-                fileDeleteTool
+                fileDeleteTool,
+                exitTool
         });
     }
 

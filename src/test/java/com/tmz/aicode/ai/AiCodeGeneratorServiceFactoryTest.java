@@ -1,6 +1,7 @@
 package com.tmz.aicode.ai;
 
 import com.tmz.aicode.ai.tools.BaseTool;
+import com.tmz.aicode.ai.tools.ExitTool;
 import com.tmz.aicode.ai.tools.FileDeleteTool;
 import com.tmz.aicode.ai.tools.FileDirReadTool;
 import com.tmz.aicode.ai.tools.FileModifyTool;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
@@ -120,14 +122,21 @@ class AiCodeGeneratorServiceFactoryTest {
                 eq(1001L), any(MessageWindowChatMemory.class), eq(100));
     }
 
-    /** 创建与生产环境一致的五个工程工具，验证工厂能够完成实际工具绑定。 */
+    /** 工具循环上限应保持为二十次，防止后续修改时意外取消稳定性边界。 */
+    @Test
+    void limitsSequentialToolInvocations() {
+        assertEquals(20, AiCodeGeneratorServiceFactory.MAX_SEQUENTIAL_TOOLS_INVOCATIONS);
+    }
+
+    /** 创建与生产环境一致的六个工程工具，验证工厂能够完成实际工具绑定。 */
     private static ToolManager createToolManager() {
         return new ToolManager(new BaseTool[]{
                 new FileWriteTool(),
                 new FileReadTool(),
                 new FileModifyTool(),
                 new FileDirReadTool(),
-                new FileDeleteTool()
+                new FileDeleteTool(),
+                new ExitTool()
         });
     }
 }

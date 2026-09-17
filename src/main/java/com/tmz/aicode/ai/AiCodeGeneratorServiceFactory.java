@@ -3,6 +3,7 @@ package com.tmz.aicode.ai;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.tmz.aicode.ai.guardrail.PromptSafetyInputGuardrail;
+import com.tmz.aicode.ai.guardrail.RetryOutputGuardrail;
 import com.tmz.aicode.ai.tools.ToolManager;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
@@ -10,6 +11,7 @@ import com.tmz.aicode.model.enums.CodeGenTypeEnum;
 import com.tmz.aicode.service.ChatHistoryService;
 import dev.langchain4j.community.store.memory.chat.redis.RedisChatMemoryStore;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.guardrail.config.OutputGuardrailsConfig;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -35,6 +37,26 @@ import java.time.Duration;
 @Configuration
 @ConditionalOnProperty(prefix = "langchain4j.open-ai.chat-model", name = "api-key")
 public class AiCodeGeneratorServiceFactory {
+
+    /**
+     * 单次模型交互允许连续执行工具的最大次数。
+     *
+     * 工程生成通常需要读写多个文件，因此不能把上限设得过低；同时必须保留明确边界，
+     * 防止模型因反复读取或修改同一文件而陷入无限工具调用循环。
+     */
+    static final int MAX_SEQUENTIAL_TOOLS_INVOCATIONS = 20;
+
+    /** 输出质量检查失败后允许追加修正提示并重新请求模型的最大次数。 */
+    private static final int OUTPUT_GUARDRAIL_MAX_RETRIES = 3;
+
+    /**
+     * 输出护轨配置是不可变对象，可以安全复用于不同应用创建的 AI Service。
+     * 达到上限后框架会停止继续请求并抛出护轨异常，避免异常响应造成无限循环。
+     */
+    private static final OutputGuardrailsConfig OUTPUT_GUARDRAILS_CONFIG =
+            OutputGuardrailsConfig.builder()
+                    .maxRetries(OUTPUT_GUARDRAIL_MAX_RETRIES)
+                    .build();
 
     private final ChatModel chatModel;
     private final ObjectProvider<StreamingChatModel> streamingChatModelProvider;
@@ -149,7 +171,12 @@ public class AiCodeGeneratorServiceFactory {
 
         return switch (codeGenType) {
             case VUE_PROJECT -> {
-                // 每个工程服务绑定新的推理流式模型，使不同应用可以并行消费模型响应。
+                /*
+                 * 每个工程服务绑定新的推理流式模型，使不同应用可以并行消费模型响应。
+                 * 工程模式会通过文件工具产生写入和删除等副作用，不能因为最终确认语过短
+                 * 就自动重复整轮工具调用，因此这里只使用输入护轨。工程质量由工作流质量
+                 * 检查节点、工具执行结果和项目构建结果共同保证。
+                 */
                 StreamingChatModel reasoningStreamingChatModel =
                         reasoningStreamingChatModelProvider.getObject();
                 yield AiServices.builder(AiCodeGeneratorService.class)
@@ -165,7 +192,8 @@ public class AiCodeGeneratorServiceFactory {
                                 toolRequest,
                                 "工具不存在：" + toolRequest.name() + "，请只使用已提供的工具"
                         ))
-                        .maxSequentialToolsInvocations(40)
+                        // 达到上限后由框架强制终止工具循环，避免持续占用模型和服务器资源。
+                        .maxSequentialToolsInvocations(MAX_SEQUENTIAL_TOOLS_INVOCATIONS)
                         .build();
             }
             case HTML, MULTI_FILE -> {
@@ -176,6 +204,12 @@ public class AiCodeGeneratorServiceFactory {
                         .streamingChatModel(streamingChatModel)
                         // HTML 和多文件模式同样执行输入审查，不能只保护工程模式。
                         .inputGuardrails(new PromptSafetyInputGuardrail())
+                        /*
+                         * 文本代码响应没有外部副作用，可以先缓存完整响应进行质量检查。
+                         * 未通过时框架会附加 RetryOutputGuardrail 给出的修正要求并重新生成。
+                         */
+                        .outputGuardrails(new RetryOutputGuardrail())
+                        .outputGuardrailsConfig(OUTPUT_GUARDRAILS_CONFIG)
                         .chatMemory(chatMemory)
                         .build();
             }
