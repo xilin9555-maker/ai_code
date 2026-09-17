@@ -1,5 +1,6 @@
 package com.tmz.aicode.langgraph4j.ai;
 
+import com.tmz.aicode.ai.guardrail.PromptSafetyInputGuardrail;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.service.AiServices;
 import org.springframework.beans.factory.ObjectProvider;
@@ -33,6 +34,11 @@ public class ImageCollectionPlanServiceFactory {
         ChatModel chatModel = routingChatModelProvider.getObject();
         return AiServices.builder(ImageCollectionPlanService.class)
                 .chatModel(chatModel)
+                /*
+                 * 图片规划是工作流中最早接触原始需求的模型节点，必须在这里完成输入审查，
+                 * 不能等到后面的代码生成节点才发现恶意内容。
+                 */
+                .inputGuardrails(new PromptSafetyInputGuardrail())
                 .build();
     }
 

@@ -2,6 +2,7 @@ package com.tmz.aicode.ai;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.tmz.aicode.ai.guardrail.PromptSafetyInputGuardrail;
 import com.tmz.aicode.ai.tools.ToolManager;
 import com.tmz.aicode.exception.BusinessException;
 import com.tmz.aicode.exception.ErrorCode;
@@ -153,6 +154,8 @@ public class AiCodeGeneratorServiceFactory {
                         reasoningStreamingChatModelProvider.getObject();
                 yield AiServices.builder(AiCodeGeneratorService.class)
                         .streamingChatModel(reasoningStreamingChatModel)
+                        // 在消息进入模型及工具调用链之前拒绝异常输入。
+                        .inputGuardrails(new PromptSafetyInputGuardrail())
                         // 服务方法声明了 @MemoryId，因此这里必须提供按 memoryId 获取记忆的方式。
                         .chatMemoryProvider(memoryId -> chatMemory)
                         // 显式转成 Object[]，确保数组按可变参数展开，而不是被当作一个工具对象。
@@ -171,6 +174,8 @@ public class AiCodeGeneratorServiceFactory {
                 yield AiServices.builder(AiCodeGeneratorService.class)
                         .chatModel(chatModel)
                         .streamingChatModel(streamingChatModel)
+                        // HTML 和多文件模式同样执行输入审查，不能只保护工程模式。
+                        .inputGuardrails(new PromptSafetyInputGuardrail())
                         .chatMemory(chatMemory)
                         .build();
             }

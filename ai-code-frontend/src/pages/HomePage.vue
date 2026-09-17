@@ -25,6 +25,8 @@ import {
 
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
+/** 与后端输入护轨保持一致，避免用户提交后才发现需求超过安全上限。 */
+const PROMPT_MAX_LENGTH = 1000
 const prompt = ref('')
 const promptInput = ref<{ focus: () => void } | null>(null)
 const creating = ref(false)
@@ -220,7 +222,7 @@ onMounted(() => {
           id="idea-input"
           ref="promptInput"
           v-model:value="prompt"
-          :maxlength="2000"
+          :maxlength="PROMPT_MAX_LENGTH"
           :auto-size="{ minRows: 3, maxRows: 7 }"
           placeholder="帮我创建个人博客网站"
           :bordered="false"
@@ -242,7 +244,7 @@ onMounted(() => {
         <div class="composer-bottom">
           <span class="composer-hint">
             <span class="tiny-spark">✳</span> 写清页面、功能和喜欢的风格
-            <span class="character-count">{{ prompt.length }}/2000</span>
+            <span class="character-count">{{ prompt.length }}/{{ PROMPT_MAX_LENGTH }}</span>
           </span>
           <a-button
             type="primary"

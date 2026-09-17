@@ -1,5 +1,6 @@
 package com.tmz.aicode.ai;
 
+import com.tmz.aicode.ai.guardrail.PromptSafetyInputGuardrail;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.service.AiServices;
 import org.springframework.beans.factory.ObjectProvider;
@@ -37,6 +38,11 @@ public class AiCodeGenTypeRoutingServiceFactory {
         ChatModel chatModel = routingChatModelProvider.getObject();
         return AiServices.builder(AiCodeGenTypeRoutingService.class)
                 .chatModel(chatModel)
+                /*
+                 * 创建应用时，初始化需求会先进入类型路由模型。这里提前注册护轨，确保
+                 * 非法输入不会因为“尚未开始生成代码”而绕过安全检查。
+                 */
+                .inputGuardrails(new PromptSafetyInputGuardrail())
                 .build();
     }
 

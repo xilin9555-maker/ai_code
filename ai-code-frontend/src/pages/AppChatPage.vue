@@ -77,6 +77,8 @@ let messageSequence = 0
 
 const STREAM_RENDER_INTERVAL = 80
 const HISTORY_PAGE_SIZE = 10
+/** 用户消息及可视化定位上下文的总长度必须与后端输入护轨上限一致。 */
+const PROMPT_MAX_LENGTH = 1000
 const appId = computed(() => String(route.params.id ?? ''))
 const currentUserId = computed(() =>
   loginUserStore.loginUser.id == null ? '' : String(loginUserStore.loginUser.id),
@@ -185,7 +187,12 @@ function appendElementContext(content: string, elementInfo?: ElementInfo) {
     lines.push(`- HTML 摘要：${normalizeLine(elementInfo.htmlSnippet, 800)}`)
   }
   lines.push('[选中元素信息结束]')
-  return content + lines.join('\n')
+  /*
+   * 用户明确输入的修改要求优先完整保留，元素定位信息只使用剩余字符空间。这样既不会
+   * 因前端自动追加内容而触发长度拦截，也不会为了保留定位信息截断用户真实需求。
+   */
+  const remainingLength = Math.max(0, PROMPT_MAX_LENGTH - content.length)
+  return content + lines.join('\n').slice(0, remainingLength)
 }
 
 /** 清空父子页面中的选择状态；发送完成后同时退出编辑模式。 */
@@ -940,7 +947,7 @@ onBeforeUnmount(() => {
             <a-textarea
               v-model:value="userMessage"
               :disabled="!isOwner || generating"
-              :maxlength="2000"
+              :maxlength="PROMPT_MAX_LENGTH"
               :auto-size="{ minRows: 2, maxRows: 5 }"
               :placeholder="composerPlaceholder"
               @keydown.ctrl.enter="generateCode()"
