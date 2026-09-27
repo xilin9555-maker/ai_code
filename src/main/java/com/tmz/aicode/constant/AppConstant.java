@@ -28,13 +28,6 @@ public interface AppConstant {
             + File.separator + "tmp" + File.separator + "code_deploy";
 
     /**
-     * 静态网站对外访问地址。
-     *
-     * 本地环境约定由 Nginx 监听 80 端口，因此不需要在地址中额外写端口。
-     */
-    String CODE_DEPLOY_HOST = "http://localhost";
-
-    /**
      * 精选应用使用的优先级。
      */
     Integer GOOD_APP_PRIORITY = 99;

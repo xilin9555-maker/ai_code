@@ -19,7 +19,8 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: true,
       proxy: {
-        '/api': { target: env.API_PROXY_TARGET || 'http://localhost:8101', changeOrigin: true },
+        // 开发环境统一访问网关，由网关根据路由将请求转发到对应的微服务。
+        '/api': { target: env.API_PROXY_TARGET || 'http://localhost:8080', changeOrigin: true },
       },
     },
   }

@@ -32,6 +32,7 @@ import com.tmz.aicode.service.AppService;
 import com.tmz.aicode.service.ChatHistoryService;
 import com.tmz.aicode.service.UserService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
@@ -51,6 +52,15 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppService {
+
+    /**
+     * 已部署应用对外访问地址的统一前缀。
+     *
+     * 本地环境未配置时使用 localhost；生产环境通过 code.deploy-host 指向 Nginx
+     * 暴露的静态资源目录，使部署结果不再依赖写死的服务器地址。
+     */
+    @Value("${code.deploy-host:http://localhost}")
+    private String deployHost;
 
     /**
      * 部署标识使用大小写字母和数字，既适合放入 URL，也能在较短长度下提供足够组合。
@@ -202,7 +212,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         ThrowUtils.throwIf(!updated,
                 ErrorCode.OPERATION_ERROR, "应用部署信息更新失败");
 
-        String appDeployUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        String appDeployUrl = String.format("%s/%s/", deployHost, deployKey);
         // 截图任务进入 RabbitMQ 后由消费者处理，部署请求不需要等待浏览器和 COS 上传。
         generateAppScreenshotAsync(appId, appDeployUrl);
         return appDeployUrl;

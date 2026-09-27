@@ -1,7 +1,96 @@
 HELP.md
+
+# 本地及生产环境的私密配置
+# 示例配置文件仍可提交，真实密钥只保存在被忽略的配置中。
 /application_local.yml
-target/
+/application_prod.yml
+/application_production.yml
+/application-local.yml
+/application-prod.yml
+/application-production.yml
+/application_local.yaml
+/application_prod.yaml
+/application_production.yaml
+/application-local.yaml
+/application-prod.yaml
+/application-production.yaml
+/application_local.properties
+/application_prod.properties
+/application_production.properties
+/application-local.properties
+/application-prod.properties
+/application-production.properties
+/set-prod-env.ps1
+
+# Spring Boot 生产环境与私密覆盖配置
+**/src/main/resources/application-local.yml
+**/src/main/resources/application-local.yaml
+**/src/main/resources/application-local.properties
+**/src/main/resources/application_local.yml
+**/src/main/resources/application_local.yaml
+**/src/main/resources/application_local.properties
+**/src/main/resources/application-prod.yml
+**/src/main/resources/application-prod.yaml
+**/src/main/resources/application-production.yml
+**/src/main/resources/application-production.yaml
+**/src/main/resources/application-prod.properties
+**/src/main/resources/application-production.properties
+**/src/main/resources/application-secret.yml
+**/src/main/resources/application-secret.yaml
+**/src/main/resources/application-secret.properties
+**/src/main/resources/application-*.local.yml
+**/src/main/resources/application-*.local.yaml
+**/src/main/resources/application-*.local.properties
+
+# 前端及脚本使用的本地环境变量文件
+**/.env
+**/.env.local
+**/.env.*.local
+**/.env.production
+**/.env.production.*
+!**/.env.example
+!**/.env.*.example
+
+# 私钥、证书密钥及云服务凭据
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+**/credentials.json
+**/service-account*.json
+**/*-credentials.json
+
+# 本地测试代码与前端测试文件
+# 使用递归规则覆盖单体模块和所有微服务模块中的 src/test 目录。
+**/src/test/
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+
+# 运行期间产生的临时目录与临时文件
+tem/
+temp/
 tmp/
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Redis 本地持久化快照可能包含 Session、缓存和对话数据，禁止提交。
+*.rdb
+
+# 后端及本地开发工具产生的运行日志。
+logs/
+*.log
+
+target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
