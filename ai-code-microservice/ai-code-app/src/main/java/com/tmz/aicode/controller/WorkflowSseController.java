@@ -1,6 +1,7 @@
 package com.tmz.aicode.controller;
 
 import cn.hutool.core.util.StrUtil;
+import com.tmz.aicode.ai.guardrail.PromptSafetyInputGuardrail;
 import com.tmz.aicode.exception.ErrorCode;
 import com.tmz.aicode.exception.ThrowUtils;
 import com.tmz.aicode.langgraph4j.WorkflowApp;
@@ -51,8 +52,12 @@ public class WorkflowSseController {
         response.setHeader("X-Accel-Buffering", "no");
 
         String normalizedPrompt = StrUtil.trim(prompt);
+        ThrowUtils.throwIf(
+                normalizedPrompt.length() > PromptSafetyInputGuardrail.MAX_PROMPT_LENGTH,
+                ErrorCode.PARAMS_ERROR,
+                "用户原始输入不能超过 1000 字"
+        );
         log.info("收到 Flux 工作流执行请求：{}", normalizedPrompt);
         return WorkflowApp.executeWorkflowWithFlux(normalizedPrompt);
     }
 }
-

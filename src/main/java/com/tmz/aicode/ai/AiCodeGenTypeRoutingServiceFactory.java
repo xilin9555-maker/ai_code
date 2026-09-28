@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Configuration;
  * 每次路由都使用一个新的非流式模型，避免多个创建请求共享模型实例后串行等待。
  */
 @Configuration
-@ConditionalOnProperty(prefix = "langchain4j.open-ai.chat-model", name = "api-key")
+@ConditionalOnProperty(prefix = "langchain4j.open-ai.routing-chat-model", name = "api-key")
 public class AiCodeGenTypeRoutingServiceFactory {
 
     private final ObjectProvider<ChatModel> routingChatModelProvider;

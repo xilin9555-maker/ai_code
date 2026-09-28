@@ -20,6 +20,26 @@ public class PromptSafetyInputGuardrail implements InputGuardrail {
     /** 单次用户输入允许的最大字符数，防止异常长文本占用过多上下文。 */
     public static final int MAX_PROMPT_LENGTH = 1000;
 
+    /** 当前护轨实例允许的最大字符数。内部增强提示词可以使用更大的独立上限。 */
+    private final int maxPromptLength;
+
+    /** 创建面向用户原始输入的护轨，默认严格限制为 1000 个字符。 */
+    public PromptSafetyInputGuardrail() {
+        this(MAX_PROMPT_LENGTH);
+    }
+
+    /**
+     * 创建指定长度上限的护轨。
+     *
+     * @param maxPromptLength 当前调用场景允许的最大字符数
+     */
+    public PromptSafetyInputGuardrail(int maxPromptLength) {
+        if (maxPromptLength <= 0) {
+            throw new IllegalArgumentException("提示词最大长度必须大于 0");
+        }
+        this.maxPromptLength = maxPromptLength;
+    }
+
     /**
      * 基础敏感词列表同时覆盖中英文常见表达。
      *
@@ -72,8 +92,8 @@ public class PromptSafetyInputGuardrail implements InputGuardrail {
         }
 
         String input = userMessage.singleText();
-        if (input.length() > MAX_PROMPT_LENGTH) {
-            return fatal("输入内容过长，不要超过 " + MAX_PROMPT_LENGTH + " 字");
+        if (input.length() > maxPromptLength) {
+            return fatal("输入内容过长，不要超过 " + maxPromptLength + " 字");
         }
         if (input.trim().isEmpty()) {
             return fatal("输入内容不能为空");
@@ -94,4 +114,3 @@ public class PromptSafetyInputGuardrail implements InputGuardrail {
         return success();
     }
 }
-

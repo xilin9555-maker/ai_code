@@ -9,6 +9,7 @@ import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.tmz.aicode.ai.AiCodeGenTypeRoutingService;
 import com.tmz.aicode.ai.AiCodeGenTypeRoutingServiceFactory;
+import com.tmz.aicode.ai.guardrail.PromptSafetyInputGuardrail;
 import com.tmz.aicode.constant.AppConstant;
 import com.tmz.aicode.core.AiCodeGeneratorFacade;
 import com.tmz.aicode.core.builder.VueProjectBuilder;
@@ -128,6 +129,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         String initPrompt = StrUtil.trim(appAddRequest.getInitPrompt());
         ThrowUtils.throwIf(StrUtil.isBlank(initPrompt),
                 ErrorCode.PARAMS_ERROR, "初始化需求不能为空");
+        ThrowUtils.throwIf(initPrompt.length() > PromptSafetyInputGuardrail.MAX_PROMPT_LENGTH,
+                ErrorCode.PARAMS_ERROR, "初始化需求不能超过 1000 字");
         ThrowUtils.throwIf(loginUser == null || loginUser.getId() == null,
                 ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
 
@@ -281,6 +284,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         String normalizedMessage = StrUtil.trim(message);
         if (StrUtil.isBlank(normalizedMessage)) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户消息不能为空");
+        }
+        if (normalizedMessage.length() > PromptSafetyInputGuardrail.MAX_PROMPT_LENGTH) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户原始输入不能超过 1000 字");
         }
         if (loginUser == null || loginUser.getId() == null) {
             throw new BusinessException(ErrorCode.NOT_LOGIN_ERROR);

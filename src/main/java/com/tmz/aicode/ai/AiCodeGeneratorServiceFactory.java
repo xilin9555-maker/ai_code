@@ -46,6 +46,9 @@ public class AiCodeGeneratorServiceFactory {
      */
     static final int MAX_SEQUENTIAL_TOOLS_INVOCATIONS = 20;
 
+    /** 工作流加入图片、质量反馈等上下文后，内部提示词允许的最大字符数。 */
+    static final int MAX_INTERNAL_PROMPT_LENGTH = 16000;
+
     /** 输出质量检查失败后允许追加修正提示并重新请求模型的最大次数。 */
     private static final int OUTPUT_GUARDRAIL_MAX_RETRIES = 3;
 
@@ -181,8 +184,8 @@ public class AiCodeGeneratorServiceFactory {
                         reasoningStreamingChatModelProvider.getObject();
                 yield AiServices.builder(AiCodeGeneratorService.class)
                         .streamingChatModel(reasoningStreamingChatModel)
-                        // 在消息进入模型及工具调用链之前拒绝异常输入。
-                        .inputGuardrails(new PromptSafetyInputGuardrail())
+                        // 原始输入已在业务入口限制为 1000 字；这里为工作流增强内容保留空间。
+                        .inputGuardrails(new PromptSafetyInputGuardrail(MAX_INTERNAL_PROMPT_LENGTH))
                         // 服务方法声明了 @MemoryId，因此这里必须提供按 memoryId 获取记忆的方式。
                         .chatMemoryProvider(memoryId -> chatMemory)
                         // 显式转成 Object[]，确保数组按可变参数展开，而不是被当作一个工具对象。
@@ -202,8 +205,8 @@ public class AiCodeGeneratorServiceFactory {
                 yield AiServices.builder(AiCodeGeneratorService.class)
                         .chatModel(chatModel)
                         .streamingChatModel(streamingChatModel)
-                        // HTML 和多文件模式同样执行输入审查，不能只保护工程模式。
-                        .inputGuardrails(new PromptSafetyInputGuardrail())
+                        // 质量检查重试也会追加内部说明，因此代码生成阶段使用独立长度上限。
+                        .inputGuardrails(new PromptSafetyInputGuardrail(MAX_INTERNAL_PROMPT_LENGTH))
                         /*
                          * 文本代码响应没有外部副作用，可以先缓存完整响应进行质量检查。
                          * 未通过时框架会附加 RetryOutputGuardrail 给出的修正要求并重新生成。
